@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<resources>
+    <color name="font_normal">#ffdddddd</color>
+    <color name="font_value">#ffdd6611</color>
+    <color name="font_focused">#ffdd6600</color>
+    <color name="font_invalid">#ff777777</color>
+    <color name="font_warning">#ffdddd00</color>
+    <color name="font_error">#ffdd8800</color>
+
+    <color name="bar_bg">#ff111111</color>
+    <color name="window_bg">#ff000000</color>
+    <color name="footer_bg">#ff1a1a1a</color>
+    <color name="panel_bg">#ff212121</color>
+    <color name="scrim_40">#66000000</color>
+
+    <color name="hl_fill">#cc3300</color>
+    <color name="hl_edge_light">#dd7700</color>
+    <color name="row_border_dark">#666666</color>
+    <color name="row_border_light">#dddddd</color>
+    <color name="row_pressed_orange">#dd9900</color>
+</resources>

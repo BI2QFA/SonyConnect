@@ -1,0 +1,24 @@
+# 构建产物
+build/
+*.class
+
+# Gradle 本机配置
+.gradle/
+local.properties
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.kotlin/
+
+# 安装包（本仓库不收录 APK/AAB）
+*.apk
+*.aab
+
+# 日志与系统文件
+*.log
+.DS_Store
+Thumbs.db
