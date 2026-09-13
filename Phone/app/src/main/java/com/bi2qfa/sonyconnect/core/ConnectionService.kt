@@ -12,6 +12,10 @@ import androidx.core.app.NotificationCompat
 import com.bi2qfa.sonyconnect.R
 import com.bi2qfa.sonyconnect.data.DeviceStore
 
+
+
+
+
 class ConnectionService : Service() {
 
     companion object {
@@ -66,6 +70,7 @@ class ConnectionService : Service() {
             .build()
     }
 
+    
     private fun mainActivityIntent() = android.app.PendingIntent.getActivity(
         this, 0,
         Intent(this, com.bi2qfa.sonyconnect.ui.MainActivity::class.java),

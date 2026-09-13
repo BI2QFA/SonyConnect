@@ -3,21 +3,107 @@ package com.bi2qfa.sonyconnect.core
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
+import com.bi2qfa.sonyconnect.data.PairingStore
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.OutputStream
+
+
+
+
+
+
+
+
 
 interface StorageSink {
     fun partBytes(): Long
 
     fun appendStream(): OutputStream
 
+    
+
+
+
+
+
+
+    fun truncateStream(): OutputStream
+
     fun commit()
 
     fun discard()
 
     companion object {
+        
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        fun deviceFolderFor(guidHex: String?): String {
+            val rec = guidHex?.takeIf { it.isNotBlank() }?.let { PairingStore.find(it) }
+            val model = rec?.peerModel?.trim().orEmpty()
+            val serial = rec?.peerSerial?.trim().orEmpty()
+            val base = when {
+                model.isNotEmpty() && serial.isNotEmpty() -> model + "_" + serial
+                model.isNotEmpty() -> model
+                serial.isNotEmpty() -> serial
+                else -> ""
+            }
+            val code = com.bi2qfa.sonyconnect.core.ConnectionCenter.shortCode(guidHex)
+            val raw = when {
+                base.isEmpty() -> code.ifEmpty { "unknown" }      
+                code.isEmpty() -> base                            
+                else -> base + "_" + code
+            }
+            return sanitizeDirName(raw)
+        }
+
+        private fun sanitizeDirName(name: String): String {
+            val sb = StringBuilder(name.length)
+            for (c in name) {
+                if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
+                    c == '"' || c == '<' || c == '>' || c == '|' || c < ' '
+                ) {
+                    sb.append('_')
+                } else {
+                    sb.append(c)
+                }
+            }
+            val s = sb.toString().trim().trim('.')
+            return if (s.isEmpty()) "unknown" else s
+        }
+
+        
+
+
+
+
+
+
+
+
+
+
+
+        fun localRelPath(deviceDir: String, cameraPath: String): String {
+            val rel = cameraPath.trimStart('/')
+            return if (deviceDir.isBlank()) rel else deviceDir + "/" + rel
+        }
+
+        
         fun resolve(context: Context, treeUri: String, cameraPath: String): StorageSink {
             return if (treeUri.isNotBlank()) {
                 try {
@@ -30,6 +116,10 @@ interface StorageSink {
             }
         }
 
+        
+
+
+
         fun mimeOf(name: String): String {
             val ext = name.substringAfterLast('.', "").lowercase()
             return when (ext) {
@@ -39,6 +129,10 @@ interface StorageSink {
                 else -> "application/octet-stream"
             }
         }
+
+        
+
+
 
         fun openUriOrNull(context: Context, treeUri: String, cameraPath: String): Uri? {
             val rel = cameraPath.trimStart('/')
@@ -64,10 +158,12 @@ interface StorageSink {
     }
 }
 
+
 class DocSink(context: Context, private val treeUri: Uri, cameraPath: String) : StorageSink {
 
     private val resolver = context.contentResolver
-
+    
+    
     private val dirs = mutableMapOf<String, Uri>()
     private var partDoc: Uri? = null
     private var finalDoc: Uri? = null
@@ -125,7 +221,8 @@ class DocSink(context: Context, private val treeUri: Uri, cameraPath: String) : 
         dirs[name]?.let {
             return DocumentsContract.getDocumentId(it)
         }
-
+        
+        
         val parentDoc = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentDocId)
         return DocumentsContract.createDocument(resolver, parentDoc, DocumentsContract.Document.MIME_TYPE_DIR, name)
             ?.let { DocumentsContract.getDocumentId(it) }
@@ -137,10 +234,10 @@ class DocSink(context: Context, private val treeUri: Uri, cameraPath: String) : 
         finalDoc = null
         dirs.clear()
         childrenOf(parentDocId)
-
+        
         finalDoc?.let { DocumentsContract.deleteDocument(resolver, it) }
         partDoc?.let { return DocumentsContract.getDocumentId(it) }
-
+        
         val parentDoc = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentDocId)
         val created = DocumentsContract.createDocument(resolver, parentDoc, mime, partName)
             ?: throw FileNotFoundException("无法创建文件 $partName")
@@ -162,9 +259,17 @@ class DocSink(context: Context, private val treeUri: Uri, cameraPath: String) : 
         return resolver.openOutputStream(uri, "wa") ?: throw FileNotFoundException("无法写入")
     }
 
+    override fun truncateStream(): OutputStream {
+        val uri = partDoc ?: throw FileNotFoundException("part 未创建")
+        
+        return resolver.openOutputStream(uri, "wt") ?: throw FileNotFoundException("无法写入")
+    }
+
     override fun commit() {
         val uri = partDoc ?: return
-
+        
+        
+        
         runCatching {
             DocumentsContract.renameDocument(resolver, uri, finalName)
         }.onFailure {
@@ -173,7 +278,7 @@ class DocSink(context: Context, private val treeUri: Uri, cameraPath: String) : 
     }
 
     private fun copyRename(uri: Uri) {
-
+        
         val docId = DocumentsContract.getDocumentId(uri)
         val parentId = docId.substringBeforeLast('/', missingDelimiterValue = docId)
         val parentDoc = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentId)
@@ -195,6 +300,7 @@ class DocSink(context: Context, private val treeUri: Uri, cameraPath: String) : 
     }
 }
 
+
 class FileSink(context: Context, cameraPath: String) : StorageSink {
 
     private val base: File = context.getExternalFilesDir("SonyConnect")
@@ -213,13 +319,18 @@ class FileSink(context: Context, cameraPath: String) : StorageSink {
 
     override fun appendStream(): OutputStream {
         if (finalFile.isFile) finalFile.delete()
-        return java.io.FileOutputStream(part, true)
+        return java.io.FileOutputStream(part, true) 
+    }
+
+    override fun truncateStream(): OutputStream {
+        if (finalFile.isFile) finalFile.delete()
+        return java.io.FileOutputStream(part, false) 
     }
 
     override fun commit() {
         if (finalFile.isFile) finalFile.delete()
         if (!part.renameTo(finalFile)) {
-
+            
             part.copyTo(finalFile, overwrite = true)
             part.delete()
         }

@@ -13,10 +13,18 @@ android {
 
     defaultConfig {
         applicationId = "com.bi2qfa.sonyconnect"
-        minSdk = 31
+        minSdk = 31          
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        
+        
+        
+        
+        
+        
+        
+        
+        versionCode = 7
+        versionName = "2.0"
     }
 
     buildTypes {
@@ -44,7 +52,6 @@ dependencies {
     implementation(libs.compose.ui.graphics)
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
-    implementation(libs.commons.net)
     debugImplementation(libs.compose.ui.tooling)
     testImplementation(libs.junit)
 }

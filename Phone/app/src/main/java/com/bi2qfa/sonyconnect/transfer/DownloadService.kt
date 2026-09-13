@@ -14,9 +14,22 @@ import com.bi2qfa.sonyconnect.core.ConnectionCenter
 import com.bi2qfa.sonyconnect.core.StorageSink
 import com.bi2qfa.sonyconnect.data.SettingsRepo
 import com.bi2qfa.sonyconnect.data.ThumbStore
-import com.bi2qfa.sonyconnect.ftp.FtpRepository
-import com.bi2qfa.sonyconnect.protocol.ConnectClient
+import com.bi2qfa.sonyconnect.ptpip.ObjectRepository
+import com.bi2qfa.sonyconnect.ptpip.PtpCodec
 import java.util.concurrent.atomic.AtomicBoolean
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 class DownloadService : Service() {
 
@@ -42,6 +55,7 @@ class DownloadService : Service() {
             )
         }
 
+        
         private fun mainIntent(context: Context) = android.app.PendingIntent.getActivity(
             context, 0,
             Intent(context, com.bi2qfa.sonyconnect.ui.MainActivity::class.java),
@@ -73,7 +87,7 @@ class DownloadService : Service() {
                 return START_NOT_STICKY
             }
             else -> {
-                stopAll = false
+                stopAll = false 
                 if (runningFlag.compareAndSet(false, true)) {
                     Thread({ drainSafely() }, "TransferDrain").apply {
                         isDaemon = true
@@ -85,71 +99,149 @@ class DownloadService : Service() {
         return START_NOT_STICKY
     }
 
+    
+
+
+
+
     private fun drainSafely() {
         try {
             drainQueue()
         } catch (t: Throwable) {
             android.util.Log.e("DownloadService", "drainQueue crashed", t)
             runCatching {
-                for ((idx, it) in TransferStore.items.withIndex()) {
-                    if (it.state == TransferState.RUNNING) {
-                        TransferStore.items[idx] = it.copy(state = TransferState.QUEUED)
-                    }
+                
+                
+                TransferStore.runningQueue?.let { q ->
+                    TransferStore.requeueRunning(q)
+                    TransferStore.persistNow()
                 }
-                TransferStore.persistNow()
             }
         } finally {
-            runCatching { notifyBatchResult() }
+            
+            
+            if (batchStarted) runCatching { notifyBatchResult() }
             runCatching {
                 ThumbStore.resumeAfterTransfer()
-                runCatching { ConnectClient.thumbResume() }
+                boundHost?.let { h ->
+                    runCatching {
+                        ObjectRepository.thumbQueue(h, PtpCodec.OP_THUMB_QUEUE_RESUME, emptyList())
+                    }
+                }
             }
             TransferStore.markBatchEnded()
-            FtpRepository.closeAll()
+            boundHost = null
+            batchStarted = false
+            
+            
+            
             runningFlag.set(false)
             stopSelf()
         }
     }
 
+    
+
+
+
+
+
+    @Volatile
+    private var boundHost: String? = null
+
+    
+    @Volatile
+    private var batchStarted = false
+
+    private fun currentDeviceKey(): String =
+        ConnectionCenter.camera?.guidHex.orEmpty().lowercase()
+
     private fun drainQueue() {
+        
+        
+        
+        
+        val q = TransferStore.currentQueue
+        val boundGuid = currentDeviceKey()
+        boundHost = ConnectionCenter.host
 
+        
+        
+        
+        if (boundHost == null || boundGuid.isEmpty() || boundGuid != q.guid) {
+            android.util.Log.d(
+                "DownloadService",
+                "未开始：host=${boundHost} 会话设备=$boundGuid 队列设备=${q.guid}",
+            )
+            return
+        }
+
+        
         ThumbStore.pauseForTransfer()
-        runCatching { ConnectClient.thumbPause() }
+        boundHost?.let { h ->
+            runCatching { ObjectRepository.thumbQueue(h, PtpCodec.OP_THUMB_QUEUE_PAUSE, emptyList()) }
+        }
 
-        TransferStore.markBatchStarted()
+        TransferStore.markBatchStarted(q)
+        batchStarted = true
         var lastNotify = 0L
         notifyBatch(null)
 
         while (!stopAll) {
-            val next = TransferStore.items.firstOrNull { it.state == TransferState.QUEUED }
+            
+            
+            if (currentDeviceKey() != boundGuid) {
+                android.util.Log.d(
+                    "DownloadService",
+                    "设备已切换（$boundGuid → ${currentDeviceKey()}），本批暂停",
+                )
+                stopAll = true
+                break
+            }
+            val next = q.items.firstOrNull { it.state == TransferState.QUEUED }
                 ?: break
             val item = next.copy(state = TransferState.RUNNING)
-            TransferStore.update(item)
-            TransferStore.updateBatchProgress()
+            TransferStore.update(q, item)
+            TransferStore.updateBatchProgress(q)
 
             var attempt = 0
-            var result: FtpRepository.PumpResult
-
+            var result: ObjectRepository.PumpResult
+            
+            
             var lastTotal = 0L
+            
+            
+            
+            val deviceDir = item.deviceDir
             do {
-                val h = ConnectionCenter.host
+                val h = boundHost
                 if (h == null) {
-                    result = FtpRepository.PumpResult.FAILED
+                    result = ObjectRepository.PumpResult.FAILED
                     break
                 }
-                val sink = StorageSink.resolve(this, SettingsRepo.downloadTreeUri, item.path.trimStart('/'))
-                val base = sink.partBytes().coerceIn(0, item.size)
+                val sink = StorageSink.resolve(
+                    this,
+                    SettingsRepo.downloadTreeUri,
+                    StorageSink.localRelPath(deviceDir, item.path),
+                )
+                
+                
+                
+                
+                val base = if (item.doneBytes <= 0L) 0L
+                else sink.partBytes().coerceIn(0, item.size)
                 lastTotal = base
-                val out = sink.appendStream()
+                val out = if (base == 0L) sink.truncateStream() else sink.appendStream()
                 result = try {
-                    FtpRepository.pumpToStream(
+                    ObjectRepository.pumpToStream(
                         h, item.path, base, out,
-                        cancelled = { stopAll },
-
+                        cancelled = { stopAll || currentDeviceKey() != boundGuid },
+                        
+                        
                         onProgress = { total ->
                             lastTotal = total
-                            TransferStore.updateProgress(item.id, total)
-                            TransferStore.updateBatchProgress()
+                            TransferStore.updateProgress(q, item.id, total)
+                            TransferStore.updateBatchProgress(q)
                             val now = System.currentTimeMillis()
                             if (now - lastNotify > 400) {
                                 lastNotify = now
@@ -158,52 +250,50 @@ class DownloadService : Service() {
                         },
                     )
                 } catch (e: Exception) {
-                    FtpRepository.PumpResult.FAILED
+                    ObjectRepository.PumpResult.FAILED
                 } finally {
                     runCatching { out.close() }
                 }
-                if (result == FtpRepository.PumpResult.COMPLETED) {
+                if (result == ObjectRepository.PumpResult.COMPLETED) {
                     lastTotal = item.size
-
+                    
+                    
                     runCatching { sink.commit() }
-                        .onFailure { result = FtpRepository.PumpResult.FAILED }
+                        .onFailure { result = ObjectRepository.PumpResult.FAILED }
                 }
-                if (result == FtpRepository.PumpResult.FAILED) {
+                if (result == ObjectRepository.PumpResult.FAILED) {
                     runCatching { sink.discard() }
                 }
                 attempt++
-            } while (result == FtpRepository.PumpResult.FAILED && !stopAll && attempt < 4)
+            } while (result == ObjectRepository.PumpResult.FAILED && !stopAll && attempt < 4)
 
             val doneItem = item.copy(
                 state = when {
-                    result == FtpRepository.PumpResult.COMPLETED -> TransferState.DONE
-                    stopAll -> TransferState.QUEUED
+                    result == ObjectRepository.PumpResult.COMPLETED -> TransferState.DONE
+                    stopAll -> TransferState.QUEUED 
                     else -> TransferState.FAILED
                 },
                 doneBytes = lastTotal,
             )
-            TransferStore.update(doneItem)
-            TransferStore.updateBatchProgress()
+            TransferStore.update(q, doneItem)
+            TransferStore.updateBatchProgress(q)
             notifyBatch(null)
         }
 
         notifyBatch(if (stopAll) "传输已停止" else "传输完成")
 
-        if (!stopAll && SettingsRepo.autoExitAfterTransfer &&
-            ConnectionCenter.state == ConnectionCenter.State.CONNECTED
-        ) {
-            runCatching { ConnectClient.exitApp() }
-        }
-
         if (stopAll) {
-
-            for ((idx, it) in TransferStore.items.withIndex()) {
-                if (it.state == TransferState.RUNNING) {
-                    TransferStore.items[idx] = it.copy(state = TransferState.QUEUED)
-                }
-            }
+            
+            val q = TransferStore.runningQueue ?: TransferStore.currentQueue
+            TransferStore.requeueRunning(q)
+            TransferStore.persistNow()
         }
     }
+
+    
+
+
+
 
     private fun notifyBatch(finalTitle: String?) {
         val nm = getSystemService(NotificationManager::class.java) ?: return
@@ -230,7 +320,9 @@ class DownloadService : Service() {
             .setOngoing(true)
             .setSilent(true)
             .setContentIntent(mainIntent(this))
-
+        
+        
+        
         if (max > 0) {
             if (max <= Int.MAX_VALUE) {
                 b.setProgress(max.toInt(), progress.toInt().coerceIn(0, max.toInt()), false)
@@ -242,10 +334,17 @@ class DownloadService : Service() {
         return b.build()
     }
 
+    
+
+
+
+
+
     private fun notifyBatchResult() {
         val nm = getSystemService(NotificationManager::class.java) ?: return
-        val done = TransferStore.countBy(TransferState.DONE)
-        val failed = TransferStore.countBy(TransferState.FAILED)
+        val q = TransferStore.runningQueue ?: TransferStore.currentQueue
+        val done = TransferStore.countBy(q, TransferState.DONE)
+        val failed = TransferStore.countBy(q, TransferState.FAILED)
         nm.notify(
             NOTIF_ID_RESULT,
             NotificationCompat.Builder(this, CHANNEL_ID)

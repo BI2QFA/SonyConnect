@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+
+
+
+
+
+
+
 <resources>
     <string name="app_name">SonyConnect</string>
-    <string name="tab_home">主界面</string>
-    <string name="tab_files">文件</string>
-    <string name="tab_transfers">传输</string>
-    <string name="not_connected">未连接设备</string>
-    <string name="scan_devices">扫描设备</string>
-    <string name="qr_connect">扫码连接</string>
-    <string name="settings">设置</string>
 </resources>

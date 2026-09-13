@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+
+
+
+
+
+
+
 <resources>
-    <color name="seed_blue">#FF1565C0</color>
-    <color name="seed_purple">#FF7E57C2</color>
-    <color name="seed_green">#FF2E7D32</color>
-    <color name="seed_amber">#FFEF6C00</color>
-    <color name="window_light">#FFFCF8FF</color>
-    <color name="window_dark">#FF121218</color>
+    <color name="window_dark">#FF0B0B0D</color>
 </resources>

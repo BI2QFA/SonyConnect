@@ -12,6 +12,12 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 
+
+
+
+
+
+
 public class TestMain {
 
     private static int passed = 0;
@@ -25,6 +31,7 @@ public class TestMain {
             System.exit(2);
         }
 
+        
         byte[] arwSmall = ThumbnailExtractor.extractSmall(arwSrc);
         check("ARW 小图存在", arwSmall != null);
         check("ARW 小图 SOI", arwSmall != null && (arwSmall[0] & 0xFF) == 0xFF && (arwSmall[1] & 0xFF) == 0xD8);
@@ -52,6 +59,7 @@ public class TestMain {
         check("JPG EXIF model=ILCE-6300", ji != null && "ILCE-6300".equals(ji.model));
         check("JPG EXIF 镜头名", ji != null && ji.lens != null && ji.lens.contains("OSS"));
 
+        
         File root = Files.createTempDirectory("sc-test-root").toFile();
         File dcim = new File(root, "DCIM/100MSDCF");
         dcim.mkdirs();
@@ -134,6 +142,7 @@ public class TestMain {
         }
     }
 
+    
     private static class MiniFtp {
         private final Socket ctrl;
         private final InputStream in;
@@ -145,7 +154,7 @@ public class TestMain {
             ctrl.connect(new InetSocketAddress(InetAddress.getByName(host), port), 3000);
             in = ctrl.getInputStream();
             out = ctrl.getOutputStream();
-            readReply();
+            readReply(); 
         }
 
         private String readReply() throws Exception {
@@ -157,7 +166,7 @@ public class TestMain {
                 if (b == '\n') {
                     String s = resp.toString();
                     if (s.length() >= 4 && s.charAt(3) == ' ') return s;
-                    if (s.length() >= 4 && s.charAt(3) == '-') continue;
+                    if (s.length() >= 4 && s.charAt(3) == '-') continue; 
                 }
             }
             return resp.toString();
@@ -191,6 +200,7 @@ public class TestMain {
             return hi * 256 + lo;
         }
 
+        
         byte[] retr(String path, long rest) throws Exception {
             if (rest > 0) {
                 String r = cmd("REST " + rest);
@@ -206,11 +216,12 @@ public class TestMain {
             int n;
             while ((n = din.read(buf)) > 0) bos.write(buf, 0, n);
             data.close();
-            r = readReply();
+            r = readReply(); 
             if (!r.startsWith("226")) throw new IllegalStateException("after RETR: " + r);
             return bos.toByteArray();
         }
 
+        
         String retrRaw(String path) throws Exception {
             int p = pasvPort();
             String r = cmd("RETR " + path);
@@ -218,7 +229,7 @@ public class TestMain {
                 Socket data = new Socket(InetAddress.getByName("127.0.0.1"), p);
                 InputStream din = data.getInputStream();
                 byte[] buf = new byte[4096];
-                while (din.read(buf) > 0) {   }
+                while (din.read(buf) > 0) {  }
                 data.close();
                 readReply();
             }

@@ -14,7 +14,7 @@ local.properties
 .vscode/
 .kotlin/
 
-# 安装包（本仓库不收录 APK/AAB）
+# 安装包（本仓库不收录 APK/AAB —— 2026-09-14 用户确认：APK 只放本地文件夹整理用）
 *.apk
 *.aab
 
@@ -22,3 +22,7 @@ local.properties
 *.log
 .DS_Store
 Thumbs.db
+
+# 相机端原生构建中间产物
+native/ndk-out/
+native/ndk-libs/

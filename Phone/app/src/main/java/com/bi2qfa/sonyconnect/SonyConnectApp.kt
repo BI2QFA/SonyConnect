@@ -2,6 +2,8 @@ package com.bi2qfa.sonyconnect
 
 import android.app.Application
 import com.bi2qfa.sonyconnect.core.ConnectionCenter
+import com.bi2qfa.sonyconnect.data.IdentityRepo
+import com.bi2qfa.sonyconnect.data.PairingStore
 import com.bi2qfa.sonyconnect.data.SettingsRepo
 import com.bi2qfa.sonyconnect.data.ThumbStore
 import com.bi2qfa.sonyconnect.transfer.TransferStore
@@ -18,6 +20,10 @@ class SonyConnectApp : Application() {
         super.onCreate()
         appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         SettingsRepo.init(this)
+        
+        
+        IdentityRepo.init(this)
+        PairingStore.init(this)
         TransferStore.load(this)
         ThumbStore.init(this)
         ConnectionCenter.init(appScope, this)

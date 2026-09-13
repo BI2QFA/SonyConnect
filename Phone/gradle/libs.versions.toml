@@ -1,26 +1,29 @@
 [versions]
 agp = "9.2.1"
 kotlinComposeCompiler = "2.2.20"
-composeBom = "2026.08.00"
+# ★ 用 **alpha 通道的 BOM**（`compose-bom-alpha`），不是稳定通道的 `compose-bom`。
+#   原因：MD3E 的那套 API（MaterialExpressiveTheme / MotionScheme.expressive() /
+#   ListItem 的 segmentedShapes / FloatingToolbar / ButtonGroup / LoadingIndicator /
+#   MaterialShapes）在稳定线 1.4.0 里**全是 Kotlin internal**，只在 1.5.0-alpha 里公开。
+#   稳定 BOM 2026.09.00 锁的仍是 material3 1.4.0；alpha BOM 2026.09.00 锁的是
+#   material3 1.5.0-alpha28，并且把 foundation/runtime/ui 一起锁到 1.13.0-alpha03，
+#   保证整套互相匹配（单独提 material3 的 alpha 版本会把它和稳定 foundation 混在一起）。
+composeBom = "2026.09.00"
 activityCompose = "1.13.0"
 coreKtx = "1.19.0"
 lifecycleRuntime = "2.9.4"
-commonsNet = "3.11.1"
-zxingEmbedded = "4.3.0"
 junit = "4.13.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-lifecycle-runtime = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntime" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+compose-bom = { group = "androidx.compose", name = "compose-bom-alpha", version.ref = "composeBom" }
 compose-ui = { group = "androidx.compose.ui", name = "ui" }
 compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 compose-material3 = { group = "androidx.compose.material3", name = "material3" }
-commons-net = { group = "commons-net", name = "commons-net", version.ref = "commonsNet" }
-zxing-embedded = { group = "com.journeyapps", name = "zxing-android-embedded", version.ref = "zxingEmbedded" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]

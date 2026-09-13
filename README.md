@@ -4,12 +4,22 @@
 
 为索尼老机型提供更好更方便的连接手机功能
 
-### 功能
+## 功能
 
 - 通过连接已有Wi-Fi或创建Wi-Fi热点连接手机
 - 传输SD卡内的文件
 - 智能的缩略图解析机制
-- 自动识别设备型号、SN码、电量、镜头型号
+
+## 更新
+
+- 1.0
+ - 首个版本
+
+- 2.0
+ - 底层彻底重构，完全重写了控制协议和传输协议，不再使用低效率的FTP进行文件传输
+ - 增加了配对模式和更好的设备记忆机制
+ - 相机端完整实现了索尼原厂软件的界面框架与外观
+ - 手机端使用了 Material 3 Expressive 设计语言
 
 ## 兼容性
 
@@ -17,8 +27,8 @@
 
 ## 使用方法
 
-使用[Sony-PMCA-RE](https://github.com/ma1co/Sony-PMCA-RE)将SonyConnect-Camera-1.0.apk安装至相机
-将SonyConnect-Phone-1.0.apk安装至手机
+使用[Sony-PMCA-RE](https://github.com/ma1co/Sony-PMCA-RE)将SonyConnect-Camera-2.0.apk安装至相机
+将SonyConnect-Phone-2.0.apk安装至手机
 使相机与手机处于同一局域网下即可连接
 
 ## 免责声明

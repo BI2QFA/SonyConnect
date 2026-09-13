@@ -10,24 +10,44 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import com.bi2qfa.sonyconnect.ftp.FtpRepository
+import com.bi2qfa.sonyconnect.ptpip.ObjectRepository
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
+
+
+
+
+
+
+
+
+
+
+
+
 
 object ThumbStore {
 
     enum class ThumbState { NONE, LOADING, READY, FAILED }
 
+    
+    private const val KEEP_THUMBS = 600
+
+    
+    private const val KEEP_PREVIEWS = 60
+
     private lateinit var appContext: Context
     private lateinit var smallDiskDir: File
     private lateinit var previewDiskDir: File
 
+    
     val states = mutableStateMapOf<String, ThumbState>()
 
     var paused by mutableStateOf(false)
         private set
 
+    
     var batchDone by mutableStateOf(0)
         private set
     var batchTotal by mutableStateOf(0)
@@ -38,6 +58,14 @@ object ThumbStore {
     private val lock = Object()
     private val started = AtomicBoolean(false)
     private var host: String? = null
+
+    
+
+
+
+
+    @Volatile
+    private var camId: String = ""
 
     private val memoryCache = object : LruCache<String, Bitmap>(24 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
@@ -58,6 +86,7 @@ object ThumbStore {
     }
 
     fun markBatchQueued(paths: List<String>) {
+        syncCamId()
         synchronized(lock) {
             host = com.bi2qfa.sonyconnect.core.ConnectionCenter.host
             batchTotal = paths.size
@@ -70,7 +99,9 @@ object ThumbStore {
         }
     }
 
+    
     fun request(paths: List<String>) {
+        syncCamId()
         synchronized(lock) {
             host = com.bi2qfa.sonyconnect.core.ConnectionCenter.host
             var added = false
@@ -88,6 +119,8 @@ object ThumbStore {
         }
     }
 
+    
+
     fun pauseForTransfer() {
         paused = true
     }
@@ -97,7 +130,10 @@ object ThumbStore {
         synchronized(lock) { lock.notifyAll() }
     }
 
+    
+
     fun smallThumb(path: String): ImageBitmap? {
+        syncCamId()
         memoryCache.get(path)?.let { return it.asImageBitmap() }
         val f = smallDiskFile(path)
         if (f.isFile) {
@@ -111,7 +147,9 @@ object ThumbStore {
         return null
     }
 
+    
     fun fetchPreviewBlocking(path: String): ImageBitmap? {
+        syncCamId()
         val f = previewDiskFile(path)
         if (f.isFile) {
             runCatching {
@@ -119,18 +157,49 @@ object ThumbStore {
             }
         }
         val h = host ?: com.bi2qfa.sonyconnect.core.ConnectionCenter.host ?: return null
-        val bytes = FtpRepository.fetchVirtualPreview(h, path) ?: return null
-        runCatching { f.writeBytes(bytes) }
+        val bytes = ObjectRepository.fetchVirtualPreview(h, path) ?: return null
+        runCatching {
+            f.writeBytes(bytes)
+            prune(f.parentFile, KEEP_PREVIEWS)
+        }
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
     }
 
-    private fun smallDiskFile(path: String) = File(smallDiskDir, cacheKey(path) + ".jpg")
+    
+    private fun syncCamId() {
+        val g = com.bi2qfa.sonyconnect.core.ConnectionCenter.camera?.guidHex
+        if (!g.isNullOrBlank()) camId = g
+    }
 
-    private fun previewDiskFile(path: String) = File(previewDiskDir, cacheKey(path) + ".jpg")
+    private fun subDir(base: File, id: String): File {
+        val d = File(base, if (id.isBlank()) "unknown" else id)
+        if (!d.isDirectory) runCatching { d.mkdirs() }
+        return d
+    }
+
+    private fun smallDiskFile(path: String) = File(subDir(smallDiskDir, camId), cacheKey(path) + ".jpg")
+
+    private fun previewDiskFile(path: String) = File(subDir(previewDiskDir, camId), cacheKey(path) + ".jpg")
 
     private fun cacheKey(path: String): String {
         val md = MessageDigest.getInstance("MD5")
         return md.digest(path.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    }
+
+    
+
+
+
+
+
+    private fun prune(d: File, keep: Int) {
+        val fs = runCatching { d.listFiles() }.getOrNull() ?: return
+        if (fs.size <= keep) return
+        runCatching {
+            fs.sortedBy { it.lastModified() }
+                .take(fs.size - keep)
+                .forEach { it.delete() }
+        }
     }
 
     fun reset() {
@@ -144,21 +213,28 @@ object ThumbStore {
         }
         states.clear()
         memoryCache.evictAll()
+        camId = ""
     }
+
+    
 
     private fun fetchLoop() {
         while (true) {
-
+            
             val p = takeNext() ?: continue
-
+            
+            
             try {
                 states[p] = ThumbState.LOADING
                 val h = host ?: com.bi2qfa.sonyconnect.core.ConnectionCenter.host
-                val bytes = if (h == null) null else FtpRepository.fetchVirtualThumb(h, p)
+                val bytes = if (h == null) null else ObjectRepository.fetchVirtualThumb(h, p)
                 val bmp = bytes?.let { b -> runCatching { decodeSmall(b) }.getOrNull() }
                 if (bmp != null) {
                     memoryCache.put(p, bmp)
-                    runCatching { smallDiskFile(p).writeBytes(bytes) }
+                    runCatching {
+                        smallDiskFile(p).writeBytes(bytes)
+                        prune(smallDiskFile(p).parentFile, KEEP_THUMBS)
+                    }
                     states[p] = ThumbState.READY
                 } else {
                     states[p] = ThumbState.FAILED

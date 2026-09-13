@@ -1,26 +1,22 @@
-apply plugin: 'com.android.application'
 
-android {
-    compileSdkVersion 15
-    buildToolsVersion '26.0.2'
-
-    defaultConfig {
-        applicationId "com.bi2qfa.sonyconnect"
-        minSdkVersion 10
-        targetSdkVersion 10
-        versionCode 1
-        versionName "1.0"
+buildscript {
+    repositories {
+        
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/central' }
+        google()
+        mavenCentral()
     }
-
-    sourceCompatibility = JavaVersion.VERSION_1_6
-    targetCompatibility = JavaVersion.VERSION_1_6
-
-    packagingOptions {
-
-        exclude 'com/sony/**'
+    dependencies {
+        classpath 'com.android.tools.build:gradle:3.0.1'
     }
 }
 
-dependencies {
-    compileOnly files('libs/stubs.jar')
+allprojects {
+    repositories {
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/central' }
+        google()
+        mavenCentral()
+    }
 }

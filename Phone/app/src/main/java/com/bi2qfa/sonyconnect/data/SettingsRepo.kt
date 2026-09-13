@@ -7,15 +7,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 
+
+
+
+
 object SettingsRepo {
 
     private const val KEY_TREE = "downloadTreeUri"
     private const val KEY_SEED = "seed"
     private const val KEY_DYNAMIC = "dynamic"
     private const val KEY_DARK = "dark"
-    private const val KEY_DEVICES = "deviceHistory"
-    private const val KEY_PREFERRED = "preferredDevice"
-    private const val KEY_AUTO_EXIT = "autoExitAfterTransfer"
+    
+    
+    private const val KEY_LAST_DEVICE = "lastConnectedDevice" 
 
     lateinit var prefs: SharedPreferences
         private set
@@ -26,16 +30,22 @@ object SettingsRepo {
         private set
     var dynamicColor by mutableStateOf(true)
         private set
-    var darkMode by mutableIntStateOf(0)
+    var darkMode by mutableIntStateOf(2) 
         private set
 
-    var deviceHistory by mutableStateOf<List<String>>(emptyList())
-        private set
+    
 
-    var preferredDevice by mutableStateOf("")
-        private set
 
-    var autoExitAfterTransfer by mutableStateOf(false)
+
+
+
+
+
+
+
+
+
+    var lastConnectedDevice by mutableStateOf("")
         private set
 
     fun init(context: Context) {
@@ -43,34 +53,21 @@ object SettingsRepo {
         downloadTreeUri = prefs.getString(KEY_TREE, "") ?: ""
         seedIndex = prefs.getInt(KEY_SEED, 0)
         dynamicColor = prefs.getBoolean(KEY_DYNAMIC, true)
-        darkMode = prefs.getInt(KEY_DARK, 0)
-        deviceHistory = (prefs.getString(KEY_DEVICES, "") ?: "")
-            .split('\n').filter { it.contains('|') }
-        preferredDevice = prefs.getString(KEY_PREFERRED, "") ?: ""
-        autoExitAfterTransfer = prefs.getBoolean(KEY_AUTO_EXIT, false)
+        
+        
+        darkMode = prefs.getInt(KEY_DARK, 2)
+        lastConnectedDevice = prefs.getString(KEY_LAST_DEVICE, "") ?: ""
     }
 
-    fun recordDevice(model: String, serial: String) {
-        if (model.isBlank() || serial.isBlank()) return
-        val entry = "$model|$serial"
-        if (deviceHistory.contains(entry)) return
-        deviceHistory = (deviceHistory + entry).takeLast(10)
-        prefs.edit().putString(KEY_DEVICES, deviceHistory.joinToString("\n")).apply()
-    }
+    
 
-    fun updatePreferredDevice(v: String) {
-        preferredDevice = v
-        prefs.edit().putString(KEY_PREFERRED, v).apply()
-    }
 
-    fun updateAutoExitAfterTransfer(v: Boolean) {
-        autoExitAfterTransfer = v
-        prefs.edit().putBoolean(KEY_AUTO_EXIT, v).apply()
-    }
 
-    fun deviceLabel(entry: String): String {
-        val p = entry.split('|', limit = 2)
-        return if (p.size == 2) "${p[0]} SN:${p[1]}" else p[0]
+
+    fun updateLastDevice(guidHex: String) {
+        if (guidHex.isBlank() || guidHex.equals(lastConnectedDevice, ignoreCase = true)) return
+        lastConnectedDevice = guidHex
+        prefs.edit().putString(KEY_LAST_DEVICE, guidHex).apply()
     }
 
     fun updateDownloadTreeUri(v: String) {
@@ -93,6 +90,10 @@ object SettingsRepo {
         prefs.edit().putInt(KEY_DARK, v).apply()
     }
 
+    
+
+
+
     fun downloadDirLabel(): String {
         if (downloadTreeUri.isBlank()) return ""
         return try {
@@ -109,7 +110,7 @@ object SettingsRepo {
             }
             if (rest.isBlank()) volumeName else "$volumeName/$rest"
         } catch (e: Exception) {
-            downloadTreeUri
+            downloadTreeUri 
         }
     }
 }

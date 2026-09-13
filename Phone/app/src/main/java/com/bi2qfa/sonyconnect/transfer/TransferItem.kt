@@ -6,12 +6,29 @@ import org.json.JSONObject
 enum class TransferState { QUEUED, RUNNING, DONE, FAILED }
 
 data class TransferItem(
-    val id: String,
+    val id: String,        
     val name: String,
     val path: String,
     val size: Long,
     val state: TransferState = TransferState.QUEUED,
-    val doneBytes: Long = 0,
+    val doneBytes: Long = 0, 
+    
+
+
+
+
+
+
+
+    val mtime: Long = 0,
+    
+
+
+
+
+
+
+    val deviceDir: String = "",
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("id", id)
@@ -20,6 +37,8 @@ data class TransferItem(
         .put("size", size)
         .put("state", state.name)
         .put("done", doneBytes)
+        .put("mtime", mtime)
+        .put("dir", deviceDir)
 
     companion object {
         fun fromJson(o: JSONObject): TransferItem = TransferItem(
@@ -30,6 +49,8 @@ data class TransferItem(
             state = runCatching { TransferState.valueOf(o.optString("state")) }
                 .getOrDefault(TransferState.QUEUED),
             doneBytes = o.optLong("done"),
+            mtime = o.optLong("mtime"),
+            deviceDir = o.optString("dir"),
         )
     }
 }

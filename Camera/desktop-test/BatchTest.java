@@ -2,6 +2,11 @@ package com.bi2qfa.sonyconnect;
 
 import java.io.File;
 
+
+
+
+
+
 public class BatchTest {
 
     public static void main(String[] args) throws Exception {
