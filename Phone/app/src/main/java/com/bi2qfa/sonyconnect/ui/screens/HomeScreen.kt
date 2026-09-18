@@ -59,7 +59,7 @@ import com.bi2qfa.sonyconnect.ui.theme.Motion
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun HomeScreen(onOpenCameraDetail: () -> Unit) {
+fun HomeScreen(onOpenCameraDetail: () -> Unit, onOpenRemote: () -> Unit = {}) {
     val context = LocalContext.current
     val info = DeviceStore.info
     val state = ConnectionCenter.state
@@ -201,6 +201,20 @@ fun HomeScreen(onOpenCameraDetail: () -> Unit) {
         }
 
         
+        if (connected) {
+            SectionHeader("遥控拍摄")
+            SettingsGroup {
+                SettingsRow(
+                    index = 0, count = 1,
+                    title = "实时取景与快门",
+                    support = "像 Imaging Edge 一样遥控拍照",
+                    leading = { IconCircle(R.drawable.ic_camera, IconTints.Green) },
+                    trailing = { Chevron() },
+                    onClick = onOpenRemote,
+                )
+            }
+        }
+
         SectionHeader("连接")
         
         val error = if (!connected && !connecting) ConnectionCenter.lastError else null

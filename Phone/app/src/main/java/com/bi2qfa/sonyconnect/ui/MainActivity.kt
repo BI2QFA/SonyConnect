@@ -38,6 +38,7 @@ import com.bi2qfa.sonyconnect.ui.screens.CameraDetailScreen
 import com.bi2qfa.sonyconnect.ui.screens.FilesScreen
 import com.bi2qfa.sonyconnect.ui.screens.HomeScreen
 import com.bi2qfa.sonyconnect.ui.screens.PairingScreen
+import com.bi2qfa.sonyconnect.ui.screens.RemoteScreen
 import com.bi2qfa.sonyconnect.ui.screens.SettingsPage
 import com.bi2qfa.sonyconnect.ui.screens.SettingsScreen
 import com.bi2qfa.sonyconnect.ui.screens.TransfersScreen
@@ -142,6 +143,7 @@ fun AppRoot() {
     var showPairing by remember { mutableStateOf(false) }
     
     var showCameraDetail by remember { mutableStateOf(false) }
+    var showRemote by remember { mutableStateOf(false) }
     var browsingPreviousGuid by remember { mutableStateOf("") }
     
     
@@ -182,6 +184,7 @@ fun AppRoot() {
     
     
     BackHandler(enabled = showCameraDetail) { showCameraDetail = false }
+    BackHandler(enabled = showRemote) { showRemote = false }
     
     BackHandler(enabled = showSettings && !showPairing && settingsPage != SettingsPage.Hub) {
         settingsPage = SettingsPage.Hub
@@ -207,6 +210,7 @@ fun AppRoot() {
     val (pageTitle, onBack) = when {
         
         pairingScreen -> "配对相机" to (if (hasPaired) ({ showPairing = false }) else null)
+        showRemote -> "遥控拍摄" to ({ showRemote = false })
         showCameraDetail -> "相机信息" to ({ showCameraDetail = false })
         showSettings -> settingsPage.title to (
             if (settingsPage == SettingsPage.Hub) ({ showSettings = false })
@@ -228,7 +232,9 @@ fun AppRoot() {
             
             containerColor = MaterialTheme.colorScheme.surface,
             topBar = {
-                AppHeader(title = pageTitle, subtitle = subtitle, onBack = onBack)
+                if (!showRemote) {
+                    AppHeader(title = pageTitle, subtitle = subtitle, onBack = onBack)
+                }
             },
         ) { pad ->
             
@@ -242,6 +248,7 @@ fun AppRoot() {
             
             val screenKey = when {
                 pairingScreen -> "pairing"
+                showRemote -> "remote"
                 showCameraDetail -> "cameraDetail"
                 showSettings -> "settings:${settingsPage.ordinal}"
                 else -> "tab$tab"
@@ -278,9 +285,15 @@ fun AppRoot() {
                 },
                 label = "screen",
             ) { key ->
-                Surface(Modifier.fillMaxSize().padding(pad), color = Color.Transparent) {
+                Surface(
+                    Modifier.fillMaxSize().then(
+                        if (key == "remote") Modifier else Modifier.padding(pad),
+                    ),
+                    color = Color.Transparent,
+                ) {
                     when {
                         key == "pairing" -> PairingScreen()
+                        key == "remote" -> RemoteScreen(onClose = { showRemote = false })
                         key == "cameraDetail" -> CameraDetailScreen()
                         key.startsWith("settings:") -> SettingsScreen(
                             
@@ -292,7 +305,10 @@ fun AppRoot() {
                             onNavigate = { settingsPage = it },
                             onOpenPairing = { showPairing = true },
                         )
-                        key == "tab0" -> HomeScreen(onOpenCameraDetail = { showCameraDetail = true })
+                        key == "tab0" -> HomeScreen(
+                            onOpenCameraDetail = { showCameraDetail = true },
+                            onOpenRemote = { showRemote = true },
+                        )
                         key == "tab1" -> FilesScreen(onGoTransfers = { tab = 2 }, dirState = filesDir)
                         else -> TransfersScreen()
                     }
@@ -304,7 +320,7 @@ fun AppRoot() {
         
         
         
-        if (hasPaired && !showSettings && !showCameraDetail && !pairingScreen) {
+        if (hasPaired && !showSettings && !showCameraDetail && !showRemote && !pairingScreen) {
             FloatingNav(
                 
                 modifier = Modifier.fillMaxSize(),
