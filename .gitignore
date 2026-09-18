@@ -34,3 +34,4 @@ __pycache__/
 *.pyc
 Camera/tools/ui/diag/
 Camera/portcheck/build_out/
+Camera/desktop-test/apkcheck/
