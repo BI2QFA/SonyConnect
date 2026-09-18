@@ -243,9 +243,20 @@ public class DeviceInfo {
         synchronized (lensLock) {
             long now = System.currentTimeMillis();
             if (cachedLens != null && now - lensAt < LENS_TTL_MS) return cachedLens;
+            if (RecSession.get().isActive()) {
+                String live = RecSession.get().lensName();
+                if (live != null && live.length() > 0) {
+                    cachedLens = live;
+                    lensAt = now;
+                    return live;
+                }
+            }
             Object cam = null;
             String name = null;
             try {
+                if (RecSession.get().isActive()) {
+                    return cachedLens;
+                }
                 Class<?> ex = Class.forName("com.sony.scalar.hardware.CameraEx");
                 Class<?> options = Class.forName("com.sony.scalar.hardware.CameraEx$OpenOptions");
                 java.lang.reflect.Method open = ex.getMethod("open", int.class, options);
