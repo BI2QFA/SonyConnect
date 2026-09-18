@@ -407,6 +407,55 @@ public class PtpCameraHandler implements PtpIpServer.Handler, PtpIpServer.Pairin
         }
     }
 
+    public boolean recEnter() {
+        RecSession.get().configure(rootDir, null);
+        return RecSession.get().enter();
+    }
+
+    public void recLeave() {
+        RecSession.get().leave();
+    }
+
+    public byte[] recState() {
+        return RecSession.get().stateJson();
+    }
+
+    public int recLvStart() {
+        return RecSession.get().startLiveview();
+    }
+
+    public void recLvStop() {
+        RecSession.get().stopLiveview();
+    }
+
+    public String recShoot() {
+        return RecSession.get().shoot();
+    }
+
+    public boolean recAf(boolean on) {
+        return RecSession.get().halfPress(on);
+    }
+
+    public boolean recZoom(int dir, int speed) {
+        return RecSession.get().zoom(dir, speed);
+    }
+
+    public boolean recSetProp(String key, String value) {
+        return RecSession.get().setProp(key, value);
+    }
+
+    public boolean recTouchAf(float x, float y) {
+        return RecSession.get().touchAf(x, y);
+    }
+
+    public boolean recMovie(boolean start) {
+        return RecSession.get().movie(start);
+    }
+
+    public String recError() {
+        return RecSession.get().lastError();
+    }
+
     
     
     

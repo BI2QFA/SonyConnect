@@ -127,7 +127,29 @@ public class PtpIpServer {
         
         void onThumbControl(int op, String[] paths);
 
+        boolean recEnter();
 
+        void recLeave();
+
+        byte[] recState();
+
+        int recLvStart();
+
+        void recLvStop();
+
+        String recShoot();
+
+        boolean recAf(boolean on);
+
+        boolean recZoom(int dir, int speed);
+
+        boolean recSetProp(String key, String value);
+
+        boolean recTouchAf(float x, float y);
+
+        boolean recMovie(boolean start);
+
+        String recError();
     }
 
     
@@ -806,12 +828,16 @@ public class PtpIpServer {
             if (closed) {
                 return;
             }
+            boolean wasControl = role == ROLE_CONTROL;
             closed = true;
             AppLog.i("Net", "断开 conn#" + id + (fileSide ? "（文件）" : "（协议）"));
             closeQuietly(socket);
             List<Conn> bucket = fileSide ? fileConns : conns;
             synchronized (bucket) {
                 bucket.remove(this);
+            }
+            if (wasControl && connectedClientCount() == 0) {
+                RecSession.get().leave();
             }
         }
 
@@ -1110,6 +1136,19 @@ public class PtpIpServer {
                 case PtpCodec.OP_PAIR_EXCHANGE: return "PAIR_EXCHANGE";
                 case PtpCodec.OP_PAIR_ABORT: return "PAIR_ABORT";
                 case PtpCodec.OP_PAIR_REMOVE: return "PAIR_REMOVE";
+                case PtpCodec.OP_REC_ENTER: return "REC_ENTER";
+                case PtpCodec.OP_REC_LEAVE: return "REC_LEAVE";
+                case PtpCodec.OP_REC_GET_STATE: return "REC_STATE";
+                case PtpCodec.OP_LV_START: return "LV_START";
+                case PtpCodec.OP_LV_STOP: return "LV_STOP";
+                case PtpCodec.OP_SHOOT: return "SHOOT";
+                case PtpCodec.OP_AF_HALF: return "AF_HALF";
+                case PtpCodec.OP_AF_CANCEL: return "AF_CANCEL";
+                case PtpCodec.OP_ZOOM: return "ZOOM";
+                case PtpCodec.OP_SET_PROP: return "SET_PROP";
+                case PtpCodec.OP_TOUCH_AF: return "TOUCH_AF";
+                case PtpCodec.OP_MOVIE_START: return "MOVIE_START";
+                case PtpCodec.OP_MOVIE_STOP: return "MOVIE_STOP";
                 default: return "?";
             }
         }
@@ -1148,9 +1187,10 @@ public class PtpIpServer {
                     break;
 
                 default:
-                    if (!dispatchData(op, tx, m)) {
-                        rspCode(tx, PtpCodec.RC_NOT_SUPPORTED);
+                    if (dispatchRec(op, tx, m) || dispatchData(op, tx, m)) {
+                        break;
                     }
+                    rspCode(tx, PtpCodec.RC_NOT_SUPPORTED);
                     break;
             }
         }
@@ -1302,6 +1342,100 @@ public class PtpIpServer {
                 default:
                     return false;
             }
+        }
+
+        private boolean dispatchRec(PtpCodec.Op op, int tx, PtpCodec.Msg m) throws IOException {
+            switch (op.code) {
+                case PtpCodec.OP_REC_ENTER:
+                    if (handler.recEnter()) {
+                        rspOk(tx, null);
+                    } else {
+                        rspBlobErr(tx, PtpCodec.RC_GENERAL_ERROR, handler.recError());
+                    }
+                    return true;
+                case PtpCodec.OP_REC_LEAVE:
+                    handler.recLeave();
+                    rspOk(tx, null);
+                    return true;
+                case PtpCodec.OP_REC_GET_STATE:
+                    rspBlobOk(tx, handler.recState());
+                    return true;
+                case PtpCodec.OP_LV_START: {
+                    int port = handler.recLvStart();
+                    if (port > 0) {
+                        rspOk(tx, new int[]{port});
+                    } else {
+                        rspBlobErr(tx, PtpCodec.RC_GENERAL_ERROR, handler.recError());
+                    }
+                    return true;
+                }
+                case PtpCodec.OP_LV_STOP:
+                    handler.recLvStop();
+                    rspOk(tx, null);
+                    return true;
+                case PtpCodec.OP_SHOOT: {
+                    String path = handler.recShoot();
+                    if (path != null) {
+                        rspBlobOk(tx, utf8(path));
+                    } else {
+                        rspBlobErr(tx, PtpCodec.RC_DEVICE_BUSY, handler.recError());
+                    }
+                    return true;
+                }
+                case PtpCodec.OP_AF_HALF:
+                    rspBool(tx, handler.recAf(true));
+                    return true;
+                case PtpCodec.OP_AF_CANCEL:
+                    rspBool(tx, handler.recAf(false));
+                    return true;
+                case PtpCodec.OP_ZOOM: {
+                    int dir = op.params.length > 0 ? op.params[0] : RecSession.ZOOM_STOP;
+                    int speed = op.params.length > 1 ? op.params[1] : 1;
+                    rspBool(tx, handler.recZoom(dir, speed));
+                    return true;
+                }
+                case PtpCodec.OP_SET_PROP: {
+                    String raw = pathOf(m.body);
+                    int eq = raw.indexOf('=');
+                    if (eq <= 0) {
+                        rspCode(tx, PtpCodec.RC_GENERAL_ERROR);
+                        return true;
+                    }
+                    rspBool(tx, handler.recSetProp(raw.substring(0, eq), raw.substring(eq + 1)));
+                    return true;
+                }
+                case PtpCodec.OP_TOUCH_AF: {
+                    if (op.params.length < 2) {
+                        rspBool(tx, handler.recTouchAf(-1f, -1f));
+                        return true;
+                    }
+                    float x = op.params[0] / 1000f;
+                    float y = op.params[1] / 1000f;
+                    rspBool(tx, handler.recTouchAf(x, y));
+                    return true;
+                }
+                case PtpCodec.OP_MOVIE_START:
+                    rspBool(tx, handler.recMovie(true));
+                    return true;
+                case PtpCodec.OP_MOVIE_STOP:
+                    rspBool(tx, handler.recMovie(false));
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private void rspBool(int tx, boolean ok) throws IOException {
+            if (ok) {
+                rspOk(tx, null);
+            } else {
+                rspBlobErr(tx, PtpCodec.RC_GENERAL_ERROR, handler.recError());
+            }
+        }
+
+        private void rspBlobErr(int tx, int code, String msg) throws IOException {
+            byte[] blob = msg == null ? new byte[0] : utf8(msg);
+            send(PtpCodec.opRspBlob(code, tx, null, blob));
         }
 
         

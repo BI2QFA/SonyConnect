@@ -2509,6 +2509,14 @@ public class MainActivity extends Activity {
                 s.start();
                 ptpServer = s;
                 ptpHandler = h;
+                RecSession.get().configure(getRootDir(), new RecSession.Listener() {
+                    public void onRecEvent(int kind, int a, int b) {
+                        PtpIpServer srv = ptpServer;
+                        if (srv != null) {
+                            srv.pushEvent(PtpCodec.EV_REC, 0, new int[]{kind, a, b});
+                        }
+                    }
+                });
             } catch (IOException e) {
                 ptpServer = null;
                 ptpHandler = null;

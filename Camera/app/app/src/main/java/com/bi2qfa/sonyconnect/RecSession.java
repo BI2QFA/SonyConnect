@@ -80,8 +80,12 @@ public final class RecSession {
 
     public void configure(File root, Listener l) {
         synchronized (lock) {
-            this.rootDir = root;
-            this.listener = l;
+            if (root != null) {
+                this.rootDir = root;
+            }
+            if (l != null) {
+                this.listener = l;
+            }
         }
     }
 

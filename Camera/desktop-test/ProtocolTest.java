@@ -1214,7 +1214,18 @@ public class ProtocolTest {
             lastThumbPaths = paths;
         }
 
-
+        public boolean recEnter() { return false; }
+        public void recLeave() {}
+        public byte[] recState() { return new byte[]{'{','}'}; }
+        public int recLvStart() { return -1; }
+        public void recLvStop() {}
+        public String recShoot() { return null; }
+        public boolean recAf(boolean on) { return false; }
+        public boolean recZoom(int dir, int speed) { return false; }
+        public boolean recSetProp(String key, String value) { return false; }
+        public boolean recTouchAf(float x, float y) { return false; }
+        public boolean recMovie(boolean start) { return false; }
+        public String recError() { return ""; }
     }
 
     
