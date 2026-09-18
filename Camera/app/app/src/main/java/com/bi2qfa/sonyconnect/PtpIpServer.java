@@ -122,7 +122,7 @@ public class PtpIpServer {
         long objectMtime(String path);
 
         /** 目录列表：厂商 JSON 文本（UTF-8）；返回 null 表示路径不存在。 */
-        byte[] listDir(String path);
+        byte[] listDir(String path, int offset, int limit);
 
         /** 缩略图队列控制：op 见 {@link PtpCodec#OP_THUMB_QUEUE_BEGIN} 等。 */
         void onThumbControl(int op, String[] paths);
@@ -1216,12 +1216,21 @@ public class PtpIpServer {
         private boolean dispatchData(PtpCodec.Op op, int tx, PtpCodec.Msg m) throws IOException {
             switch (op.code) {
                 case PtpCodec.OP_LIST_DIR: {
-                    String path = pathOf(m.body);
+                    PtpCodec.OpBlob g;
+                    try {
+                        g = PtpCodec.parseOpBlob(m.body);
+                    } catch (IOException e) {
+                        rspCode(tx, PtpCodec.RC_ACCESS_DENIED);
+                        return true;
+                    }
+                    String path = pathOfBlob(g.blob);
                     if (!isPathSafe(path)) {
                         rspCode(tx, PtpCodec.RC_ACCESS_DENIED);
                         return true;
                     }
-                    byte[] json = handler.listDir(path);
+                    int offset = g.params.length > 0 ? Math.max(0, g.params[0]) : 0;
+                    int limit = g.params.length > 1 ? Math.max(0, g.params[1]) : 0;
+                    byte[] json = handler.listDir(path, offset, limit);
                     if (json == null) {
                         rspCode(tx, PtpCodec.RC_NOT_FOUND);
                         return true;
@@ -1336,9 +1345,15 @@ public class PtpIpServer {
 
             Conn owner = findControlByDevice(deviceId);
             if (owner == null) {
+                AppLog.w("Net", "DATA_OPEN 找不到控制会话 → 断开");
                 return;
             }
-            connNo = owner.connNo;
+            if (d.connNo != owner.connNo) {
+                AppLog.w("Net", "DATA_OPEN connNo 不匹配："
+                        + d.connNo + " != " + owner.connNo);
+                return;
+            }
+            connNo = d.connNo;
             socket.setSoTimeout(DATA_IDLE_MS);
             send(PtpCodec.dataOpenAck());
 

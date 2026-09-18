@@ -331,7 +331,7 @@ public class PtpCameraHandler implements PtpIpServer.Handler, PtpIpServer.Pairin
      * 写不出「数组套对象」。键名严格只用 {@code name / dir / size / mtime} ——
      * 手机端 {@code ObjectRepository.parseEntries} 只读这四个。
      */
-    public byte[] listDir(String path) {
+    public byte[] listDir(String path, int offset, int limit) {
         File dir = fileOf(path);
         if (dir == null || !dir.isDirectory()) {
             AppLog.w("File", "列目录失败（不存在/不是目录）：" + path);
@@ -348,12 +348,20 @@ public class PtpCameraHandler implements PtpIpServer.Handler, PtpIpServer.Pairin
                 ordered.add(files[i]);
             }
         }
+        int start = Math.max(0, Math.min(offset, ordered.size()));
+        int pageLimit = limit > 0 ? Math.min(limit, 256) : 0;
+        int end = pageLimit > 0 ? Math.min(ordered.size(), start + pageLimit) : ordered.size();
+        boolean hasMore = end < ordered.size();
+
         StringBuilder sb = new StringBuilder();
         sb.append('{');
         sb.append(SJson.str("dir")).append(':').append(SJson.str(path));
+        sb.append(',').append(SJson.str("offset")).append(':').append(start);
+        sb.append(',').append(SJson.str("nextOffset")).append(':').append(end);
+        sb.append(',').append(SJson.str("hasMore")).append(':').append(hasMore ? "true" : "false");
         sb.append(',').append(SJson.str("entries")).append(":[");
         int n = 0;
-        for (int i = 0; i < ordered.size(); i++) {
+        for (int i = start; i < end; i++) {
             File f = ordered.get(i);
             String name = f.getName();
             if (name == null || name.length() == 0) {

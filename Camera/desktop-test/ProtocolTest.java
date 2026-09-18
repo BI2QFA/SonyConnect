@@ -1202,7 +1202,7 @@ public class ProtocolTest {
             return 1700000000000L;
         }
 
-        public byte[] listDir(String path) {
+        public byte[] listDir(String path, int offset, int limit) {
             if (!"/DCIM".equals(path)) {
                 return null;
             }
