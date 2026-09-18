@@ -3274,6 +3274,9 @@ public class MainActivity extends Activity {
         switch (phase) {
             case PH_RUNNING:
                 sb.append("状态：运行中\n");
+                if (RecSession.get().isActive()) {
+                    sb.append("遥控拍摄中\n");
+                }
                 sb.append("手机端：").append(phoneStatusText()).append('\n');
                 sb.append("连接方式：").append(MODE_HOTSPOT.equals(savedMode) ? "相机热点" : "Wi-Fi 客户端").append('\n');
                 if (MODE_HOTSPOT.equals(savedMode)) {

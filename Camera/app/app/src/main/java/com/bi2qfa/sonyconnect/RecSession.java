@@ -239,18 +239,19 @@ public final class RecSession {
             }
             latch.await(20, TimeUnit.SECONDS);
             synchronized (shotLock) {
-                if (shotPath != null && shotPath.length() > 0) {
-                    lastShotPath = shotPath;
-                    emit(EV_SHOT, 1, 0);
-                    return shotPath;
+                String ptp = toPtpPath(shotPath);
+                if (ptp == null && shotPath != null) {
+                    ptp = shotPath;
                 }
-                if (shotJpeg != null && shotJpeg.length > 0) {
+                if (ptp == null && shotJpeg != null && shotJpeg.length > 0) {
                     File dumped = dumpJpeg(shotJpeg);
-                    if (dumped != null) {
-                        lastShotPath = dumped.getAbsolutePath();
-                        emit(EV_SHOT, 1, 0);
-                        return lastShotPath;
-                    }
+                    ptp = toPtpPath(dumped);
+                }
+                if (ptp != null && ptp.length() > 0) {
+                    lastShotPath = ptp;
+                    emit(EV_SHOT, 1, 0);
+                    restartPreviewQuiet();
+                    return ptp;
                 }
             }
             lastError = "拍照超时";
@@ -477,6 +478,7 @@ public final class RecSession {
             if (mod != null) {
                 Object st = invoke(mod, "getSelfTimer", null, null);
                 SJson.member(sb, "selfTimer", st == null ? "0" : String.valueOf(st));
+                putAnyList(sb, "selfTimerAvail", invoke(mod, "getSupportedSelfTimers", null, null));
             }
             return utf8(SJson.endObj(sb));
         }
@@ -722,6 +724,34 @@ public final class RecSession {
             }
         }
         return null;
+    }
+
+    private String toPtpPath(String abs) {
+        if (abs == null || abs.length() == 0) {
+            return null;
+        }
+        return toPtpPath(new File(abs));
+    }
+
+    private String toPtpPath(File f) {
+        if (f == null || rootDir == null) {
+            return null;
+        }
+        try {
+            String abs = f.getCanonicalPath();
+            String root = rootDir.getCanonicalPath();
+            if (abs.equals(root)) {
+                return "/";
+            }
+            String prefix = root.endsWith(File.separator) ? root : root + File.separator;
+            if (!abs.startsWith(prefix)) {
+                return null;
+            }
+            String rel = abs.substring(prefix.length()).replace('\\', '/');
+            return "/" + rel;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private File dumpJpeg(byte[] jpeg) {
