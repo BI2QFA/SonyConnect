@@ -1,7 +1,7 @@
-
-
-
-
+/*
+ * Backup 驱动访问（原样移植自 OpenMemories-Platform drivers/backup.c，
+ * 仅保留只读所需的 get_datasize / read 两条消息）。
+ */
 #include <stdarg.h>
 #include <string.h>
 

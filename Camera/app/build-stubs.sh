@@ -1,12 +1,12 @@
-
-
-
-
-
-
+#!/usr/bin/env bash
+# 重新生成 Sony API 编译桩 stubs.jar
+# 用法（Git Bash）：
+#   export JAVA_HOME="/你的JDK8路径"
+#   export ANDROID_HOME="/你的AndroidSDK路径"
+#   ./build-stubs.sh
 set -e
 
-
+# 默认值（可按需改）
 JAVA_HOME="${JAVA_HOME:-C:/Program Files/Eclipse Adoptium/jdk-8.0.442.06-hotspot}"
 ANDROID_HOME="${ANDROID_HOME:-$LOCALAPPDATA/Android/Sdk}"
 

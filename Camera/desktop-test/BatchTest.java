@@ -2,11 +2,11 @@ package com.bi2qfa.sonyconnect;
 
 import java.io.File;
 
-
-
-
-
-
+/**
+ * 通用缩略图解析方法的全量回归（对照交接文档 361/361 基准）：
+ * 对目录内全部 ARW/JPG 断言——小图与大预览都可提取、SOI/EOI 完整、
+ * 小图宽 <1000、大预览宽 ≥1000、大预览字节量恒大于小图。
+ */
 public class BatchTest {
 
     public static void main(String[] args) throws Exception {

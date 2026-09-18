@@ -17,22 +17,22 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
-
-
-
-
-
-
-
+/**
+ * 自包含的匿名只读 FTP 服务器（被动模式）。
+ *
+ * - 只实现浏览/下载命令，所有写命令回 550。
+ * - 根目录限定在传入的 rootDir 内，防止 ../ 逃逸。
+ * - 仅支持被动模式（PASV / EPSV）。
+ */
 public class FtpServer {
 
     public interface Listener {
         void onLog(String msg);
     }
 
-    
+    /** 虚拟缩略图 RETR 的小图来源钩子（ThumbPrefetcher 缓存优先，未命中回落直接提取） */
     public interface PayloadSource {
-        
+        /** 命中缓存返回字节；未命中/不支持返回 null。relPath 为虚拟路径里的相机相对路径 */
         byte[] extractSmall(String relPath, File f);
     }
 
@@ -42,14 +42,14 @@ public class FtpServer {
         this.payloadSource = source;
     }
 
-    
+    // ===== 静态实例注册：让 ExitCompletedReceiver 在 Activity 已死时也能关掉服务、释放 SD 句柄 =====
     private static FtpServer sActiveInstance;
 
     public static synchronized void setActiveInstance(FtpServer server) {
         sActiveInstance = server;
     }
 
-    
+    /** 强制停止当前存活的实例（无实例则空操作），用于退出兜底。 */
     public static synchronized void killActiveInstance() {
         if (sActiveInstance != null) {
             try { sActiveInstance.stop(); } catch (Throwable t) {}
@@ -64,7 +64,7 @@ public class FtpServer {
     private Thread acceptThread;
     private volatile boolean running = false;
 
-    
+    // 会话登记表：stop() 时逐个强拆 socket，确保没有悬空的文件/目录句柄拖住 SD 卡交接
     private final List<Session> sessions = new ArrayList<Session>();
 
     public FtpServer(File rootDir, int port, Listener listener) {
@@ -104,8 +104,8 @@ public class FtpServer {
             if (controlSocket != null) controlSocket.close();
         } catch (IOException e) {}
         controlSocket = null;
-        
-        
+        // 强拆所有会话的数据/命令连接：RETR 中断开写入会让读循环立刻结束，
+        // 打开的文件与目录流随之关闭，SD 卡得以尽快交还相机固件
         Session[] snapshot;
         synchronized (this) {
             snapshot = sessions.toArray(new Session[sessions.size()]);
@@ -144,7 +144,7 @@ public class FtpServer {
         try { if (c != null) c.close(); } catch (IOException e) {}
     }
 
-    
+    // Socket / ServerSocket 在 Java 6 未实现 Closeable，需单独重载
     private void closeQuietly(Socket s) {
         try { if (s != null) s.close(); } catch (IOException e) {}
     }
@@ -153,7 +153,7 @@ public class FtpServer {
         try { if (s != null) s.close(); } catch (IOException e) {}
     }
 
-    
+    // ============ 会话 ============
 
     private class Session extends Thread {
         private final Socket control;
@@ -161,10 +161,10 @@ public class FtpServer {
         private BufferedWriter out;
         private File cwd;
         private ServerSocket pasvSocket;
-        private Socket dataSocket;   
-        
+        private Socket dataSocket;   // 当前传输中的数据连接，stop() 时会被强拆
+        // RFC 3659 续传偏移：REST 设置，只在紧随的一次传输命令中生效
         private long restartOffset = 0;
-        
+        // 预建格式化器，避免每次列目录/取时间都 new（相机 CPU 弱，省开销）
         private final SimpleDateFormat listDateFormat = new SimpleDateFormat("MMM dd HH:mm", Locale.US);
         private final SimpleDateFormat mdtmDateFormat = new SimpleDateFormat("yyyyMMddHHmmss", Locale.US);
 
@@ -179,7 +179,7 @@ public class FtpServer {
             try {
                 in = new BufferedReader(new InputStreamReader(control.getInputStream(), "UTF-8"));
                 out = new BufferedWriter(new OutputStreamWriter(control.getOutputStream(), "UTF-8"));
-                control.setTcpNoDelay(true);   
+                control.setTcpNoDelay(true);   // 命令通道关 Nagle，响应更快
                 reply(out, "220 Welcome to SonyFTP (read-only)");
                 String line;
                 while ((line = in.readLine()) != null) {
@@ -187,7 +187,7 @@ public class FtpServer {
                     handle(line);
                 }
             } catch (IOException e) {
-                
+                // 连接断开
             } finally {
                 closeQuietly(pasvSocket);
                 closeQuietly(dataSocket);
@@ -198,7 +198,7 @@ public class FtpServer {
             }
         }
 
-        
+        /** 供服务器整体停止时强拆：关掉 PASV/数据/命令三个 socket，阻塞中的读立刻抛错收尾。 */
         void forceClose() {
             closeQuietly(pasvSocket);
             pasvSocket = null;
@@ -254,7 +254,7 @@ public class FtpServer {
             else if (cmd.equals("MDTM")) { doMdtm(arg); }
             else if (cmd.equals("REST")) { doRest(arg); }
             else if (cmd.equals("QUIT")) { reply(out, "221 Goodbye."); closeQuietly(control); }
-            
+            // 写命令全部拒绝
             else if (cmd.equals("STOR") || cmd.equals("STOU") || cmd.equals("APPE")
                     || cmd.equals("DELE") || cmd.equals("RNFR") || cmd.equals("RNTO")
                     || cmd.equals("MKD") || cmd.equals("RMD") || cmd.equals("SITE")
@@ -264,7 +264,7 @@ public class FtpServer {
             else { reply(out, "500 Unknown command."); }
         }
 
-        
+        // ===== 目录操作 =====
 
         private void doCwd(String arg) throws IOException {
             File target = resolveVirtual(arg);
@@ -284,7 +284,7 @@ public class FtpServer {
             return "/" + rel;
         }
 
-        
+        // 把虚拟路径（FTP 视角）解析成根目录内的真实文件，禁止逃逸
         private File resolveVirtual(String arg) throws IOException {
             if (arg == null || arg.length() == 0) return rootDir;
             File base = arg.startsWith("/") ? rootDir : cwd;
@@ -297,7 +297,7 @@ public class FtpServer {
             return target;
         }
 
-        
+        // ===== 被动模式 =====
 
         private void doPasv() throws IOException {
             closeQuietly(pasvSocket);
@@ -323,15 +323,15 @@ public class FtpServer {
             pasvSocket = null;
             Socket data = ss.accept();
             closeQuietly(ss);
-            dataSocket = data;   
-            
+            dataSocket = data;   // 登记当前数据连接，便于 stop()/forceClose() 强拆释放 SD 句柄
+            // 数据通道：关 Nagle + 放大收发缓冲，提升吞吐
             data.setTcpNoDelay(true);
             data.setSendBufferSize(256 * 1024);
             data.setReceiveBufferSize(256 * 1024);
             return data;
         }
 
-        
+        // ===== 列出 / 下载 =====
 
         private void doList(String arg) throws IOException {
             AppLog.i("Ftp", "LIST " + arg);
@@ -382,7 +382,7 @@ public class FtpServer {
 
         private void doRetr(String arg) throws IOException {
             AppLog.i("Ftp", "RETR " + arg);
-            
+            // SonyConnect 虚拟缩略图路径优先：/.sonyconnect/th|pv/<相机相对路径>
             String[] virt = matchVirtual(arg);
             if (virt != null) {
                 doRetrVirtual(virt[0], virt[1]);
@@ -393,7 +393,7 @@ public class FtpServer {
                 reply(out, "550 No such file or directory.");
                 return;
             }
-            
+            // 续传偏移一次性生效：取出即清零；==长度时发 0 字节后正常收尾
             long off = restartOffset;
             restartOffset = 0;
             if (off < 0 || off > f.length()) {
@@ -409,7 +409,7 @@ public class FtpServer {
                 OutputStream dos = data.getOutputStream();
                 raf = new RandomAccessFile(f, "r");
                 if (off > 0) raf.seek(off);
-                
+                // 128KB 大缓冲：减少 read/write 系统调用次数（相机 CPU 弱，越少越快）
                 byte[] buf = new byte[128 * 1024];
                 int n;
                 while ((n = raf.read(buf)) > 0) {
@@ -484,12 +484,12 @@ public class FtpServer {
             reply(out, "213 " + t);
         }
 
-        
+        // ===== SonyConnect 虚拟缩略图路径 =====
 
         private static final String VIRT_THUMB = "/.sonyconnect/th/";
         private static final String VIRT_PREVIEW = "/.sonyconnect/pv/";
 
-        
+        /** 命中虚拟路径则返回 {kind, 相对路径}，否则 null */
         private String[] matchVirtual(String arg) {
             if (arg == null) return null;
             String p = arg.trim();
@@ -509,7 +509,7 @@ public class FtpServer {
             return s;
         }
 
-        
+        /** 虚拟路径的相对路径 → 根目录内真实媒体文件（禁止逃逸）；不满足返回 null */
         private File resolveVirtualMedia(String rel) throws IOException {
             if (rel == null || rel.length() == 0) return null;
             File target = new File(rootDir, rel);
@@ -527,7 +527,7 @@ public class FtpServer {
         private byte[] extractPayload(String kind, String rel, File f) {
             try {
                 if ("th".equals(kind)) {
-                    
+                    // 预取缓存钩子（ThumbPrefetcher），未命中回落实时提取
                     PayloadSource src = payloadSource;
                     if (src != null) {
                         byte[] cached = src.extractSmall(rel, f);
@@ -541,7 +541,7 @@ public class FtpServer {
             }
         }
 
-        
+        /** 虚拟 RETR：先提取再发 150（长度真实），REST 语义与真实文件一致 */
         private void doRetrVirtual(String kind, String rel) throws IOException {            File f = resolveVirtualMedia(rel);
             if (f == null) {
                 reply(out, "550 No such media file.");

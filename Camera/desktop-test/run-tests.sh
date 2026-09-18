@@ -1,20 +1,20 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+#!/usr/bin/env bash
+# 桌面真验证（JDK8）：编译工程内纯 Java 类 + 测试入口，对真样本跑完整断言
+# 用法：./run-tests.sh
+#
+# ★ 这里的 javac **没有 -cp**（空 classpath，只有 JDK 自身）。所以凡是加进
+#   源列表的工程类，都必须零 Android 依赖 —— PtpCameraHandler 能用
+#   Platform 接口注入平台能力、PairingStore 只收一个 File，就是为了满足这条。
+#
+# ★★ 内核源码强制 `-source 1.6 -target 1.6`：相机端固化工具链是
+#   AGP 3.0.1 + compileSdk 15 + **JavaVersion.VERSION_1_6**，所以桌面这道门
+#   必须用同一个源码级编译，否则会出现"桌面全绿、装包才炸"的假绿 —— 例如
+#   Java 1.6 不允许内部类里出现静态方法，而默认源码级会放行它。
+#   测试文件不在相机上跑，用默认源码级即可，所以分两次 javac。
+#
+# ★★ 编译器**固定**用下面这个 JDK8，不跟随环境里的 JAVA_HOME：让环境决定
+#   编译器就等于这道门随机放行（曾经用 JDK21 编译过，1.6 的问题全被吞掉）。
+#   要换编译器请显式给 A6300_JDK。
 set -e
 
 JDK8="${A6300_JDK:-C:/Users/93849/AppData/Local/a6300-tools/jdk1.8.0_502}"

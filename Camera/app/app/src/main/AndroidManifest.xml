@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-
-
+<!-- 版本号只在 app/build.gradle 的 defaultConfig 里维护（Gradle 会覆盖此处的值，
+     写在这里只会让读的人误判当前版本，所以刻意不写）。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.bi2qfa.sonyconnect">
 
@@ -19,7 +19,7 @@
         android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Black.NoTitleBar">
 
-        
+        <!-- 相机平台会话结束广播：Activity.onDestroy 可能不执行，这里是最后兜底 -->
         <receiver android:name=".ExitCompletedReceiver">
             <intent-filter>
                 <action android:name="com.android.server.DAConnectionManagerService.ExitCompleted" />
@@ -27,7 +27,7 @@
             </intent-filter>
         </receiver>
 
-        
+        <!-- 静态分析定版：PMCA 应用单进程铁律——不再有任何探针服务/子进程/原生库 -->
 
         <activity android:name=".MainActivity"
             android:screenOrientation="landscape"

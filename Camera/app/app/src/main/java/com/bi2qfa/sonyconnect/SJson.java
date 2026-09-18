@@ -5,21 +5,21 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-
-
-
-
-
-
-
+/**
+ * 极简扁平 JSON（私有协议专用，纯 Java，桌面可测）。
+ *
+ * 只覆盖协议需要的子集：扁平对象 {key: value}，value ∈ string | long |
+ * boolean | string 数组。不引第三方库（相机端 minSdk 10 也要能跑，且桌面
+ * JDK8 上没有 org.json）。转义遵循 RFC 8259。
+ */
 public final class SJson {
 
     private SJson() {
     }
 
-    
+    // ===== 编码 =====
 
-    
+    /** 字符串字面量（含引号与转义） */
     public static String str(String s) {
         if (s == null) return "null";
         StringBuilder sb = new StringBuilder(s.length() + 8);
@@ -46,7 +46,7 @@ public final class SJson {
         return sb.toString();
     }
 
-    
+    /** {"k":v,...} 成员拼接小件 */
     public static StringBuilder member(StringBuilder sb, String key, String value) {
         if (sb.length() > 1) sb.append(',');
         sb.append(str(key)).append(':').append(str(value));
@@ -73,7 +73,7 @@ public final class SJson {
         return sb.append('}').toString();
     }
 
-    
+    /** 字符串数组字面量 */
     public static String strArray(List<String> list) {
         StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < list.size(); i++) {
@@ -83,12 +83,12 @@ public final class SJson {
         return sb.append(']').toString();
     }
 
-    
+    // ===== 解析（扁平对象） =====
 
-    
-
-
-
+    /**
+     * 解析扁平 JSON 对象。值类型：String / Long / Boolean / List<String>。
+     * 解析失败抛 IllegalArgumentException；输入须为单个对象且无嵌套对象。
+     */
     public static Map<String, Object> parse(String json) {
         Parser p = new Parser(json);
         p.skipWs();

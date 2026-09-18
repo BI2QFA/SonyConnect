@@ -1,7 +1,7 @@
-
+// 根构建脚本：声明 Android Gradle 插件（老版本，与相机老 Android 匹配）
 buildscript {
     repositories {
-        
+        // 国内镜像加速（阿里云），非国内环境可删除这几行
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/central' }
         google()

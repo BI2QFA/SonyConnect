@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  索尼窄体字真值（framework style bag 原值，出处 01_文档_SONY_UI_REF/03_styles.md）。
 
+  规则：**全 UI 统一横向压缩 0.7001**（H52W48 是唯一例外 0.8846）。
+  Fs/Pf 是 FontSize / PFontSize 两族（带行距的那族用于弹窗正文等**多行**内容）。
 
-
-
-
-
-
-
-
-
+  PfT* 是"紧凑"族：同一套字号去掉了 lineSpacingExtra 并关闭 includeFontPadding。
+  必须分开的原因很实在：lineSpacingExtra 对**单行**也生效，42px 字加上 10px 行距
+  高度约 54px，塞进 49px 的菜单行 / 56px 的按钮会被裁掉。容器高 ≥60px 才用带行距的那族。
+-->
 <resources>
-    
+    <!-- ===== FontSize 族（无行距，textScaleX 差异是 framework 原样，别统一）===== -->
     <style name="FsSS" parent="@android:style/Widget.TextView">
         <item name="android:textSize">26px</item>
         <item name="android:textScaleX">0.7499</item>
@@ -32,10 +32,10 @@
         <item name="android:textColor">@color/font_normal</item>
     </style>
 
-    
-    
-
-
+    <!-- 服务状态正文：38px 但**不带行距**（FontSize 族），5 行也要塞得进按钮上方 -->
+    <!-- 日志屏正文：26px、无行距、**多行**（PfT* 族带 singleLine，会把换行压成空格）。
+         一行约 41 个字符宽，日志行稍长会折行 —— 日志折行是正常的，
+         换来的是每屏能多看好几行。 -->
     <style name="FsH26" parent="@android:style/Widget.TextView">
         <item name="android:textSize">26px</item>
         <item name="android:textScaleX">0.7001</item>
@@ -48,29 +48,29 @@
         <item name="android:textColor">@color/font_normal</item>
     </style>
 
-    
-    
+    <!-- ===== PFontSize 族（带行距，**多行**正文/标题用）===== -->
+    <!-- H36W27：底部按键引导、页码 -->
     <style name="PfH36" parent="@android:style/Widget.TextView">
         <item name="android:textSize">36px</item>
         <item name="android:textScaleX">0.7001</item>
         <item name="android:lineSpacingExtra">20px</item>
         <item name="android:textColor">@color/font_normal</item>
     </style>
-    
+    <!-- H38W29：弹窗正文、关于正文 -->
     <style name="PfH38" parent="@android:style/Widget.TextView">
         <item name="android:textSize">38px</item>
         <item name="android:textScaleX">0.7001</item>
         <item name="android:lineSpacingExtra">8px</item>
         <item name="android:textColor">@color/font_normal</item>
     </style>
-    
+    <!-- H42W32：屏幕标题 -->
     <style name="PfH42" parent="@android:style/Widget.TextView">
         <item name="android:textSize">42px</item>
         <item name="android:textScaleX">0.7001</item>
         <item name="android:lineSpacingExtra">10px</item>
         <item name="android:textColor">@color/font_normal</item>
     </style>
-    
+    <!-- H52W48：全 UI 唯一例外（scaleX 0.8846）。配对码专用。 -->
     <style name="PfH52" parent="@android:style/Widget.TextView">
         <item name="android:textSize">52px</item>
         <item name="android:textScaleX">0.8846</item>
@@ -78,7 +78,7 @@
         <item name="android:textColor">@color/font_value</item>
     </style>
 
-    
+    <!-- ===== PfT* 紧凑族（单行：菜单行标签/值、按钮文字、图标引导）===== -->
     <style name="PfT42" parent="@android:style/Widget.TextView">
         <item name="android:textSize">42px</item>
         <item name="android:textScaleX">0.7001</item>
@@ -105,9 +105,9 @@
     <style name="PfT32D" parent="@style/PfT32">
         <item name="android:textColor">@color/font_invalid</item>
     </style>
-    
-
-
+    <!-- 电量百分比：28px + 0.7199（原厂顶栏那一档）。
+         ★ 用**正常白**而不是禁用灰：电量是个读数，不是"不可用"的状态 ——
+         顶上那颗电池图标本身就是 #DDDDDD，文字跟它同色才是一套（用户要求）。 -->
     <style name="PfT28" parent="@android:style/Widget.TextView">
         <item name="android:textSize">28px</item>
         <item name="android:textScaleX">0.7199</item>
@@ -122,7 +122,7 @@
         <item name="android:singleLine">true</item>
         <item name="android:textColor">@color/font_invalid</item>
     </style>
-    
+    <!-- 图标字体专用（底部按键引导）：字宽不压缩的原厂值也是 0.7001 -->
     <style name="PfTIcon" parent="@style/PfT36">
         <item name="android:textColor">@color/font_normal</item>
     </style>

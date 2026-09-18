@@ -15,13 +15,13 @@ android {
     sourceCompatibility = JavaVersion.VERSION_1_6
     targetCompatibility = JavaVersion.VERSION_1_6
 
-    
+    // 不压缩 png，保证换装素材 1:1 进包（9-patch 的 marker 边框一个字节都不能被动）
     aaptOptions {
         cruncherEnabled = false
     }
 
     packagingOptions {
-        
+        // 编译桩绝不进 APK（真机用框架里的真实类解析）
         exclude 'com/sony/**'
     }
 }

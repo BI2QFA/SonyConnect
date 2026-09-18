@@ -3,9 +3,9 @@ package com.sony.wifi.direct;
 import android.os.Parcel;
 import android.os.Parcelable;
 
-
-
-
+/**
+ * Sony 私有 API 编译桩（compileOnly，不进 APK）。
+ */
 public class DirectConfiguration implements Parcelable {
 
     public static final Parcelable.Creator<DirectConfiguration> CREATOR =

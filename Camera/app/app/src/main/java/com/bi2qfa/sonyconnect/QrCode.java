@@ -1,17 +1,17 @@
 package com.bi2qfa.sonyconnect;
 
-
-
-
-
-
-
-
+/**
+ * 自包含的极简 QR Code 生成器（无第三方依赖）。
+ *
+ * - byte 模式，纠错等级 M，支持版本 1~10（本应用 WiFi 字符串用不到更高版本）。
+ * - 返回布尔矩阵 modules[row][col]，true = 黑模块。
+ * - 固定使用掩码 0（任何掩码都是合法可扫的）。
+ */
 public final class QrCode {
 
     private QrCode() {}
 
-    
+    // ===== GF(256)（本原多项式 0x11D）=====
 
     private static final int[] EXP = new int[512];
     private static final int[] LOG = new int[256];
@@ -31,22 +31,22 @@ public final class QrCode {
         return EXP[LOG[a] + LOG[b]];
     }
 
-    
-    
+    // ===== 版本信息（纠错等级 M）=====
+    // 每项：{ ecPerBlock, 组1块数, 组1数据码字数, 组2块数, 组2数据码字数 }
     private static final int[][] VERSION_EC = {
-        {10, 1, 16, 0, 0},   
-        {16, 1, 28, 0, 0},   
-        {26, 1, 44, 0, 0},   
-        {18, 2, 32, 0, 0},   
-        {24, 2, 43, 0, 0},   
-        {16, 4, 27, 0, 0},   
-        {18, 4, 31, 0, 0},   
-        {22, 2, 38, 2, 39},  
-        {22, 3, 36, 2, 37},  
-        {26, 4, 43, 1, 44},  
+        {10, 1, 16, 0, 0},   // v1
+        {16, 1, 28, 0, 0},   // v2
+        {26, 1, 44, 0, 0},   // v3
+        {18, 2, 32, 0, 0},   // v4
+        {24, 2, 43, 0, 0},   // v5
+        {16, 4, 27, 0, 0},   // v6
+        {18, 4, 31, 0, 0},   // v7
+        {22, 2, 38, 2, 39},  // v8
+        {22, 3, 36, 2, 37},  // v9
+        {26, 4, 43, 1, 44},  // v10
     };
 
-    
+    // 对齐图案中心坐标（版本 1 无）
     private static final int[][] ALIGN_POS = {
         {},
         {6, 18},
@@ -60,7 +60,7 @@ public final class QrCode {
         {6, 28, 50},
     };
 
-    
+    // ===== 入口 =====
 
     public static boolean[][] encode(String text) {
         byte[] data = toBytes(text);
@@ -80,7 +80,7 @@ public final class QrCode {
     private static int chooseVersion(int byteLen) {
         for (int v = 1; v <= 10; v++) {
             int dataCw = totalDataCodewords(v);
-            
+            // byte 模式：4 位模式 + 计数(8 位 v1-9 / 16 位 v10) + 8 位/字节
             int countBits = (v <= 9) ? 8 : 16;
             int needBits = 4 + countBits + 8 * byteLen;
             if (needBits <= dataCw * 8) return v;
@@ -94,28 +94,28 @@ public final class QrCode {
         return b1 * d1 + b2 * d2;
     }
 
-    
+    // ===== 数据编码 + RS 纠错 =====
 
     private static byte[] buildCodewords(byte[] data, int version) {
         int[] e = VERSION_EC[version - 1];
         int ecPerBlock = e[0], b1 = e[1], d1 = e[2], b2 = e[3], d2 = e[4];
         int totalData = b1 * d1 + b2 * d2;
 
-        
+        // 1. 数据位流
         StringBuilder bits = new StringBuilder();
-        bits.append("0100"); 
+        bits.append("0100"); // byte 模式
         int countBits = (version <= 9) ? 8 : 16;
         appendBits(bits, data.length, countBits);
         for (int i = 0; i < data.length; i++) {
             appendBits(bits, data[i] & 0xFF, 8);
         }
         int capacity = totalData * 8;
-        
+        // 终止符（最多 4 位）
         int term = Math.min(4, capacity - bits.length());
         for (int i = 0; i < term; i++) bits.append('0');
-        
+        // 补到字节边界
         while (bits.length() % 8 != 0) bits.append('0');
-        
+        // 交替补 0xEC / 0x11
         int pad = 0;
         while (bits.length() < capacity) {
             appendBits(bits, (pad++ % 2 == 0) ? 0xEC : 0x11, 8);
@@ -126,7 +126,7 @@ public final class QrCode {
             dataCw[i] = (byte) Integer.parseInt(bits.substring(i * 8, i * 8 + 8), 2);
         }
 
-        
+        // 2. 分块 + RS
         int totalBlocks = b1 + b2;
         int totalCodewords = totalData + ecPerBlock * totalBlocks;
         byte[][] blocks = new byte[totalBlocks][];
@@ -135,14 +135,14 @@ public final class QrCode {
             blocks[idx] = rsEncode(sub(dataCw, idx * d1, d1), ecPerBlock);
             idx++;
         }
-        
+        // 第二组的块数据码字数比第一组多 1
         int offset = b1 * d1;
         for (int b = 0; b < b2; b++) {
             blocks[idx] = rsEncode(sub(dataCw, offset + b * d2, d2), ecPerBlock);
             idx++;
         }
 
-        
+        // 3. 交织
         byte[] result = new byte[totalCodewords];
         int k = 0;
         int maxData = Math.max(d1, d2);
@@ -173,9 +173,9 @@ public final class QrCode {
         }
     }
 
-    
+    // Reed-Solomon：返回 data 后追加 ecLen 个纠错码字的完整码字块
     private static byte[] rsEncode(byte[] data, int ecLen) {
-        int[] divisor = rsDivisor(ecLen); 
+        int[] divisor = rsDivisor(ecLen); // 生成多项式（去掉最高次项）
         byte[] ec = new byte[ecLen];
         for (int i = 0; i < data.length; i++) {
             int factor = (data[i] ^ ec[0]) & 0xFF;
@@ -191,7 +191,7 @@ public final class QrCode {
         return out;
     }
 
-    
+    // 生成多项式：divisor[j] = x^(degree-1-j) 的系数（最高次项 x^degree 恒为 1，不存）
     private static int[] rsDivisor(int degree) {
         int[] r = new int[degree];
         r[degree - 1] = 1;
@@ -206,7 +206,7 @@ public final class QrCode {
         return r;
     }
 
-    
+    // ===== 矩阵构建 =====
 
     private static boolean[][] buildMatrix(byte[] codewords, int version) {
         int size = 17 + 4 * version;
@@ -218,13 +218,13 @@ public final class QrCode {
         drawFinder(m, isFunc, 0, size - 7);
         drawTiming(m, isFunc, size);
         drawAlignment(m, isFunc, version);
-        drawFormat(m, isFunc, 0); 
+        drawFormat(m, isFunc, 0); // 掩码 0
         if (version >= 7) drawVersion(m, isFunc, version);
-        
+        // 暗模块
         m[size - 8][8] = true;
         isFunc[size - 8][8] = true;
 
-        
+        // 放置数据
         int i = 0;
         int totalBits = codewords.length * 8;
         for (int right = size - 1; right >= 1; right -= 2) {
@@ -239,7 +239,7 @@ public final class QrCode {
                             m[y][x] = ((codewords[i >> 3] >> (7 - (i & 7))) & 1) != 0;
                             i++;
                         } else {
-                            m[y][x] = false; 
+                            m[y][x] = false; // 剩余位
                         }
                     }
                 }
@@ -259,7 +259,7 @@ public final class QrCode {
                 boolean black = inFinder
                         && (dx == 0 || dx == 6 || dy == 0 || dy == 6 || (dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4));
                 if (inFinder) m[y][x] = black;
-                f[y][x] = true; 
+                f[y][x] = true; // 分隔符也算功能模块
             }
         }
     }
@@ -281,7 +281,7 @@ public final class QrCode {
         int[] pos = ALIGN_POS[version - 1];
         for (int a = 0; a < pos.length; a++) {
             for (int b = 0; b < pos.length; b++) {
-                
+                // 跳过三个角落（已被 finder 占用）
                 if ((a == 0 && b == 0) || (a == 0 && b == pos.length - 1) || (a == pos.length - 1 && b == 0)) {
                     continue;
                 }
@@ -297,7 +297,7 @@ public final class QrCode {
         }
     }
 
-    
+    // 掩码 0： (row + col) % 2 == 0 时翻转
     private static void applyMask(boolean[][] m, boolean[][] f, int size, int mask) {
         for (int y = 0; y < size; y++) {
             for (int x = 0; x < size; x++) {
@@ -319,10 +319,10 @@ public final class QrCode {
     }
 
     private static void drawFormat(boolean[][] m, boolean[][] f, int mask) {
-        int fmt = formatInfo(mask); 
+        int fmt = formatInfo(mask); // 15 位
         int size = m.length;
 
-        
+        // 拷贝 1：左上
         int[][] pos1 = {
             {8, 0}, {8, 1}, {8, 2}, {8, 3}, {8, 4}, {8, 5}, {8, 7}, {8, 8},
             {7, 8}, {5, 8}, {4, 8}, {3, 8}, {2, 8}, {1, 8}, {0, 8},
@@ -332,7 +332,7 @@ public final class QrCode {
             m[pos1[i][0]][pos1[i][1]] = bit == 1;
             f[pos1[i][0]][pos1[i][1]] = true;
         }
-        
+        // 拷贝 2：右上 + 左下
         int[][] pos2 = {
             {size - 1, 8}, {size - 2, 8}, {size - 3, 8}, {size - 4, 8}, {size - 5, 8}, {size - 6, 8}, {size - 7, 8},
             {8, size - 8}, {8, size - 7}, {8, size - 6}, {8, size - 5}, {8, size - 4}, {8, size - 3}, {8, size - 2}, {8, size - 1},
@@ -345,7 +345,7 @@ public final class QrCode {
     }
 
     private static void drawVersion(boolean[][] m, boolean[][] f, int version) {
-        int ver = versionInfo(version); 
+        int ver = versionInfo(version); // 18 位
         int size = m.length;
         for (int i = 0; i < 18; i++) {
             int bit = (ver >> i) & 1;
@@ -356,9 +356,9 @@ public final class QrCode {
         }
     }
 
-    
+    // 格式信息：5 位数据（EC 等级 M=0b00 占高 2 位 + 掩码 3 位）→ 15 位 BCH
     private static int formatInfo(int mask) {
-        int data = mask; 
+        int data = mask; // EC 等级 M = 0，故 data 仅 = 掩码
         int rem = data << 10;
         for (int i = 14; i >= 10; i--) {
             if (((rem >> i) & 1) != 0) rem ^= (0x537 << (i - 10));
@@ -366,7 +366,7 @@ public final class QrCode {
         return ((data << 10) | rem) ^ 0x5412;
     }
 
-    
+    // 版本信息：6 位版本号 → 18 位 BCH
     private static int versionInfo(int version) {
         int rem = version << 12;
         for (int i = 17; i >= 12; i--) {

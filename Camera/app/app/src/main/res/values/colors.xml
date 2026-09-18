@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-
-
-
-
+<!--
+  索尼原厂配色真值（sonyui-kit values/colors_menu.xml，resources.arsc 解码值）
+  + 换装新增的 ScalarA 系统应用族色值（黑底 + 内侧细线）。
+-->
 <resources>
-    
+    <!-- 文字（RESID_FONTSTYLE_* 真值） -->
     <color name="font_normal">#ffdddddd</color>
     <color name="font_value">#ffdd6611</color>
     <color name="font_focused">#ffdd6600</color>
@@ -12,7 +12,7 @@
     <color name="font_warning">#ffdddd00</color>
     <color name="font_error">#ffdd8800</color>
 
-    
+    <!-- 底色：原厂顶栏/底栏/面板都是纯黑，分区靠内侧 #333333 细线 -->
     <color name="bar_bg">#ff000000</color>
     <color name="window_bg">#ff000000</color>
     <color name="footer_bg">#ff000000</color>
@@ -20,15 +20,15 @@
     <color name="scrim_40">#66000000</color>
     <color name="scrim_panel">#88000000</color>
 
-    
+    <!-- 结构线：分隔线 #222222，顶栏/底栏内侧 #333333 -->
     <color name="line_div">#ff222222</color>
     <color name="line_header">#ff333333</color>
-    
-
-
+    <!-- 全屏提示窗的四边外框细线（本工程唯一非原厂件）。
+         原来给主界面用、写死 #555555；现在按相机原生"格式化完成。"那张照片实测的
+         框线亮度（≈ #393939）调成原厂结构线 #333333。 -->
     <color name="frame_line">#ff333333</color>
 
-    
+    <!-- 选中条 / 按钮 -->
     <color name="hl_fill">#cc3300</color>
     <color name="hl_edge_light">#dd7700</color>
     <color name="row_border_dark">#666666</color>

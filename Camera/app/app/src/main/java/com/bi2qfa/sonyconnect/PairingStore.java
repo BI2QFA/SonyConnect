@@ -13,71 +13,71 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+/**
+ * 相机端配对表 + 配对窗口 + 本机设备码（纯 Java，零 Android 依赖，桌面可测）。
+ *
+ * 三块职责：
+ * <ol>
+ *   <li><b>配对表</b>：记录「哪台手机被允许接入」——主键是手机的 8 字节设备码
+ *       （16 位 hex），值是配对协商出的 32 字节长期共享密钥。手机端
+ *       {@code data/PairingStore.kt} 是它的镜像（那边主键用相机 16 字节 GUID 的
+ *       hex，各侧都用自己在协议里拿得到的天然标识）。</li>
+ *   <li><b>配对窗口</b>：6 位数字配对码 + 180s 有效期 + 5 次失败失效。
+ *       码只在窗口开启期间有效；{@link #openWindow} 每次调用都换新码。</li>
+ *   <li><b>本机设备码</b>：8 字节，随机生成一次后落盘固定。
+ *       ★ 绝不读取任何真机信息（不读序列号、不读型号）——它只用于后端辨认，
+ *       不参与任何密钥派生，所以没有任何理由与硬件绑定成派生关系。</li>
+ * </ol>
+ *
+ * 落盘格式（都在构造参数给的目录里）：
+ * <ul>
+ *   <li>{@code pairings.json}：**JSONL**，每行一个扁平 JSON 对象。
+ *       之所以不用手机端那种「单条 JSON 数组」：相机端 {@link SJson} 的编码与
+ *       解析都不支持嵌套对象（{@code member(String)} 一律带引号、解析器遇到
+ *       嵌套对象直接抛错），数组套对象在这边写不出来。
+ *       字段名与手机端 {@code PairingStore.kt} 逐字对齐：
+ *       {@code id / name / model / serial / key / suite / enc / pairedAt /
+ *       lastSeenAt / lastIp / lastPort / proto}。</li>
+ *   <li>{@code device_id.hex}：本机 8 字节设备码的 16 位 hex 文本。</li>
+ * </ul>
+ *
+ * 线程安全：所有公开方法都是 {@code synchronized}。PtpIpServer 的多个连接线程
+ * 会并发查表（allowInitiator）、UI 线程会并发开关窗口。
+ */
 public class PairingStore {
 
-    
+    /** 配对窗口有效期（毫秒）。与手机端输入配对码的节奏匹配：够从容，又不至于忘记。 */
     public static final long WINDOW_MS = 180000L;
 
-    
+    /** 窗口内允许的失败次数；用满即关窗（要重新进配对模式换码）。 */
     public static final int MAX_FAILURES = 5;
 
-    
+    /** 配对码位数（纯数字，左补零）。 */
     public static final int CODE_LEN = 6;
 
-    
+    /** 本机设备码长度（字节）。 */
     public static final int DEVICE_ID_LEN = 8;
 
 
     private static final String FILE_TABLE = "pairings.json";
     private static final String FILE_DEVICE_ID = "device_id.hex";
 
-    
-
-
-
-
-
+    /**
+     * 一台已配对手机。字段与手机端 {@code PairedCamera} 对称，但**指向相反**：
+     * 这边的 name/model/serial 描述的是**手机**。
+     * <p>手机端那份描述的是相机（型号 + SN 要显示在手机端的已配对列表里）；
+     * 这份描述的是手机（设备名要显示在相机端的配对页上）。
+     */
     public static final class Paired {
-        
+        /** 手机 8 字节设备码的 16 位 hex（小写）——主键。 */
         public String peerDeviceId = "";
-        
+        /** 手机设备名，如 {@code Xiaomi 15}；取自 PAIR_BEGIN 载荷。 */
         public String peerName = "";
-        
+        /** 手机型号；当前协议不带，留空（显示用 peerName 即可）。 */
         public String peerModel = "";
-        
+        /** 手机序列号；当前协议不带，留空。 */
         public String peerSerial = "";
-        
+        /** 32 字节长期共享密钥。**不过网**，由配对码在两端各自本地派生。 */
         public long pairedAt;
         public long lastSeenAt;
         public String lastIp = "";
@@ -124,25 +124,25 @@ public class PairingStore {
         ensureDeviceId();
     }
 
-    
+    /** 最近一次落盘/读盘失败原因；成功时为 null。供 UI 诊断用。 */
     public synchronized String lastError() {
         return lastError;
     }
 
-    
-    
-    
+    // ============================================================
+    // 本机设备码
+    // ============================================================
 
-    
-
-
-
+    /**
+     * 本机 8 字节设备码。首次调用时若本地没有就随机生成并落盘，此后永不变。
+     * <p>随机源用 {@link Rand#bytes}，不掺任何真机信息。
+     */
     public synchronized byte[] deviceId() {
         ensureDeviceId();
         return (byte[]) deviceId.clone();
     }
 
-    
+    /** 本机设备码的 16 位 hex（小写）。 */
     public synchronized String deviceIdHex() {
         ensureDeviceId();
         return deviceIdHex;
@@ -164,7 +164,7 @@ public class PairingStore {
                         return;
                     }
                 } catch (Throwable ignored) {
-                    
+                    // 文件被写坏 → 落到下面重新生成
                 }
             }
         }
@@ -174,17 +174,17 @@ public class PairingStore {
             deviceId = fresh;
             deviceIdHex = freshHex;
         } else {
-            
+            // 落盘失败也不能没有码：本次会话用临时码（下次启动会再生成一个）
             deviceId = fresh;
             deviceIdHex = freshHex;
         }
     }
 
-    
-    
-    
+    // ============================================================
+    // 配对表查询
+    // ============================================================
 
-    
+    /** 全表（按 lastSeenAt 倒序，最近用的在前）。 */
     public synchronized List<Paired> all() {
         return new ArrayList<Paired>(table);
     }
@@ -193,7 +193,7 @@ public class PairingStore {
         return table.size();
     }
 
-    
+    /** 按手机设备码（16 位 hex，大小写不敏感）查。 */
     public synchronized Paired find(String peerDeviceIdHex) {
         if (peerDeviceIdHex == null) {
             return null;
@@ -208,7 +208,7 @@ public class PairingStore {
         return null;
     }
 
-    
+    /** 按手机 8 字节设备码查。 */
     public synchronized Paired find(byte[] guid8) {
         if (guid8 == null) {
             return null;
@@ -220,7 +220,7 @@ public class PairingStore {
         return find(guid8) != null;
     }
 
-    
+    /** 只取前 8 字节（16 字节 GUID 的高 8 字节是补零，设备码是低 8 字节）。 */
     static byte[] shortId(byte[] b) {
         byte[] o = new byte[DEVICE_ID_LEN];
         if (b != null) {
@@ -229,14 +229,14 @@ public class PairingStore {
         return o;
     }
 
-    
-    
-    
+    // ============================================================
+    // 配对表变更
+    // ============================================================
 
-    
-
-
-
+    /**
+     * 新增或覆盖一条配对。已存在则保留原 {@code pairedAt}（首次配对时间），
+     * 只更新密钥与可见信息 —— 与手机端 {@code upsert} 语义一致。
+     */
     public synchronized void upsert(Paired p) {
         if (p == null || p.peerDeviceId == null || p.peerDeviceId.length() == 0) {
             return;
@@ -263,7 +263,7 @@ public class PairingStore {
         sortAndPersist();
     }
 
-    
+    /** 解除配对。返回是否真的删掉了一条。 */
     public synchronized boolean remove(String peerDeviceIdHex) {
         if (peerDeviceIdHex == null) {
             return false;
@@ -288,7 +288,7 @@ public class PairingStore {
         sortAndPersist();
     }
 
-    
+    /** 连接成功后刷新「最近可见」；不改密钥。 */
     public synchronized void touch(byte[] guid8, String ip, int port, int protoVersion) {
         Paired cur = find(guid8);
         if (cur == null) {
@@ -319,11 +319,11 @@ public class PairingStore {
         persistTable();
     }
 
-    
-    
-    
+    // ============================================================
+    // 配对窗口
+    // ============================================================
 
-    
+    /** 开窗并生成新码（重开即换码，作废旧码）。返回 6 位码。 */
     public synchronized String openWindow(long now) {
         windowCode = randomCode();
         windowExpiresAt = now + WINDOW_MS;
@@ -332,7 +332,7 @@ public class PairingStore {
         return windowCode;
     }
 
-    
+    /** 关窗（离开配对页、超时、失败用尽、配对成功都会走这里）。 */
     public synchronized void closeWindow() {
         if (!windowOpen) {
             return;
@@ -343,7 +343,7 @@ public class PairingStore {
         windowFailures = 0;
     }
 
-    
+    /** 窗口是否仍有效（过期即自动关窗）。 */
     public synchronized boolean isOpen(long now) {
         if (!windowOpen) {
             return false;
@@ -355,12 +355,12 @@ public class PairingStore {
         return true;
     }
 
-    
+    /** 当前 6 位码；窗口关或已过期返回 null。 */
     public synchronized String code(long now) {
         return isOpen(now) ? windowCode : null;
     }
 
-    
+    /** 剩余有效毫秒数；窗口关返回 0。 */
     public synchronized long remainingMs(long now) {
         if (!isOpen(now)) {
             return 0L;
@@ -369,12 +369,12 @@ public class PairingStore {
         return left < 0L ? 0L : left;
     }
 
-    
+    /** 已失败次数（诊断用）。 */
     public synchronized int failures() {
         return windowFailures;
     }
 
-    
+    /** 本会话累计已用掉的配对角（配对成功后由调用方清零）。 */
     public synchronized void noteFailure(long now) {
         if (!isOpen(now)) {
             return;
@@ -400,9 +400,9 @@ public class PairingStore {
         return sb.append(s).toString();
     }
 
-    
-    
-    
+    // ============================================================
+    // 落盘
+    // ============================================================
 
     private void loadTable() {
         table.clear();
@@ -487,9 +487,9 @@ public class PairingStore {
         }
     }
 
-    
-    
-    
+    // ============================================================
+    // 文本文件读写（UTF-8；先写临时文件再改名，避免掉电留半截表）
+    // ============================================================
 
     private String readTextFile(File f) {
         if (!f.isFile()) {
@@ -530,8 +530,8 @@ public class PairingStore {
             w.flush();
             w.close();
             w = null;
-            
-            
+            // 先直接改名：POSIX（相机内部存储）上这是原子替换，不会出现半截表。
+            // Windows（桌面回归）覆盖已存在文件会失败，再退到「删旧再改名」。
             if (tmp.renameTo(f)) {
                 return true;
             }

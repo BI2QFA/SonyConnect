@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  全屏提示窗的四边外框：1px 细线矩形（600×468 @(20,6)）。
 
+  ★ 这是**最开始那一版主界面**用的外框（`panel_frame.xml`，2026-09-13 的换装第一版），
+  后来按原厂真值把主界面的外框删掉了（原厂主界面靠顶栏/底栏内侧的 #333333 细线分区），
+  这个 drawable 也跟着删了。用户这一轮点名要它回来 —— "退出界面我要的是那个带四边边框的
+  全屏退出界面，下面没有提示栏的那个" —— 所以恢复原样，但**只给"正在退出 / 正在切换模式"
+  那一屏用**（主界面照旧不加）。
 
-
-
-
-
-
-
-
-
-
-
+  颜色 @color/frame_line 也原样沿用（#555555：在黑底上是一条不刺眼的细线；
+  比原厂面板那条 (187,187,187,60%) 暗一档，因为这是"自加件"，克制些更稳）。
+-->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
     <stroke android:width="1px" android:color="@color/frame_line" />

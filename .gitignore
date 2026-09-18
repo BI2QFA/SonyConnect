@@ -26,3 +26,11 @@ Thumbs.db
 # 相机端原生构建中间产物
 native/ndk-out/
 native/ndk-libs/
+Camera/app/native/ndk-out/
+Camera/app/native/ndk-libs/
+
+# 工具缓存与本地诊断产物
+__pycache__/
+*.pyc
+Camera/tools/ui/diag/
+Camera/portcheck/build_out/

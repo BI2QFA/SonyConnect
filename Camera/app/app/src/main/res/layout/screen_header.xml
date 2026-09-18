@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  公共顶栏 640×66（原厂每个屏都是同一副顶栏：**应用图标 + 软件名 + 右上电量**，
+  连菜单屏也不例外 —— 原厂「同步到智能手机」的菜单屏顶栏就是 app 图标 + 软件名，
+  没有"选项"之类的页标题）。
 
+  三件事放在这里，是因为它们**必须**在五个屏之间完全一致：
+    ① 图标与标题共用一条横轴：靠 LinearLayout(gravity=center_vertical) 结构保证，
+       不靠各自算 margin（改字体/改行距都还对得上）；
+    ② 标题起点 = 6(图标左边距) + 70(图标宽) + 2 = 78 —— 与原厂同一条竖线；
+    ③ 电量：**只在这里定义一次**，MainActivity 遍历各屏顶栏统一刷新
+       （见 updateBattery），不会出现"主界面刷新了、别的屏没刷"。
+  另加一颗 Wi-Fi 就绪指示，位置照原厂放在[标题]与[电量]之间。
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+  引用方式：`<include android:id="@+id/header_xxx" layout="@layout/screen_header" />`
+  —— 用 include 自带的 id 去 findViewById 再包一层 findViewById(R.id.battery_icon)，
+  就能取到**各自那一份**电量控件（多个 include 里同名 id 是合法的，作用域按子树找）。
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="66px"
@@ -23,12 +23,12 @@
     android:gravity="center_vertical"
     android:orientation="horizontal">
 
-    
-
-
-
-
-
+    <!-- 应用图标：槽位仍是原厂 AppIconView 的 70×55（**标题起点靠它钉在 78**），
+         但图形本身缩小了 —— 用户要求"变小一点，和右边的字体等大"。
+         图形墨迹 42×49 —— **比右边标题（42px 字）略大**：图标是块状图形、实心面积大，
+         与文字墨迹齐平反而看着比字小（试过 32×37 与 38×45 两档，真机反馈从"太小"到
+         "再大一点点"逐档调上来的）。缩小只发生在素材内部（透明画布居中），
+         标题位置与两者间距都不用动。 -->
     <ImageView android:id="@+id/app_icon"
         android:layout_width="70px"
         android:layout_height="55px"
@@ -36,7 +36,7 @@
         android:scaleType="fitXY"
         android:src="@drawable/ic_appicon" />
 
-    
+    <!-- 标题：46 高、垂直居中，起点 = 6+70+2 = 78 -->
     <TextView android:id="@+id/app_title"
         android:layout_width="wrap_content"
         android:layout_height="46px"
@@ -49,10 +49,10 @@
         android:layout_height="1px"
         android:layout_weight="1" />
 
-    
-
-
-
+    <!-- Wi-Fi 就绪指示：原厂素材 48×32 原样拷入（不预挤压）。
+         出处 ScalarADisclaimer/res/layout/parts_titlebar_wifi.xml —— 原厂顶栏里
+         这颗图标就在[标题]与[电量]之间（x=552、48×32），即"电量左边的那个 Wi-Fi"。
+         连接就绪（phase=RUNNING）才显示，见 MainActivity.refreshWifiIcon()。 -->
     <ImageView android:id="@+id/wifi_icon"
         android:layout_width="48px"
         android:layout_height="32px"

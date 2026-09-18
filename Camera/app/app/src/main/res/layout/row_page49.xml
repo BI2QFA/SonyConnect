@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-
-
-
-
-
-
-
-
+<!--
+  页码菜单行（PageMenu 真值 menu_page_adapter.xml）：606×49。
+  标签 42px @marginLeft 10（alignParentLeft + centerVertical），值 38px @marginRight 10
+  （alignParentRight + centerVertical）—— 与原厂一字不差。
+  焦点图案是**行内的 ImageView 图层**（原厂 tag=selectable_background，src=menu_list_selector），
+  不用行的 background：那样会让行继承 9-patch 的内边距，把文字挤偏几个像素。
+  用紧凑字（去行距/关字内边距），否则 42px 字带 10px 行距约 54px 高，塞进 49px 行会被裁。
+-->
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="606px"
     android:layout_height="49px">

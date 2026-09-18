@@ -5,18 +5,18 @@ import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 
-
-
-
-
-
-
-
-
-
-
-
-
+/**
+ * 配对表 / 配对窗口 / 设备码的边界回归（纯 Java，无 socket）。
+ *
+ * <p>协议测试（ProtocolTest）覆盖的是"配对在线上怎么走"；本类覆盖的是
+ * 存储与状态机的边界：坏数据容错、窗口过期、失败次数用尽、设备码跨实例持久化。
+ * 这些用 socket 测不出来的地方才是配对表最容易坏的地方 —— 一行写坏的 JSON
+ * 就足以让整张表在下次启动时消失。
+ *
+ * <p>加解密层已整体移除（见 devlog），配对表里不再有密钥字段；但**旧版本写下的
+ * 记录（含已废弃的 key/suite/enc 字段）必须照样读得出来**，否则用户升级一次
+ * 就得把所有相机重新配一遍 —— 这条在 {@link #legacyRecordChecks} 里有断言守着。
+ */
 public class PairingStoreTest {
 
     private static int passed = 0;
@@ -39,7 +39,7 @@ public class PairingStoreTest {
         return d;
     }
 
-    
+    /** 可辨识的字节序列（16 位 hex 用）。 */
     private static byte[] bytes(byte seed, int n) {
         byte[] k = new byte[n];
         for (int i = 0; i < n; i++) {
@@ -63,9 +63,9 @@ public class PairingStoreTest {
         System.exit(failed == 0 ? 0 : 1);
     }
 
-    
-    
-    
+    // ============================================================
+    // 设备码：随机生成一次、落盘、此后不变
+    // ============================================================
 
     private static void deviceIdChecks() {
         File dir = freshDir("dev");
@@ -95,9 +95,9 @@ public class PairingStoreTest {
                 rec.deviceIdHex() != null && rec.deviceIdHex().matches("[0-9a-f]{16}"));
     }
 
-    
-    
-    
+    // ============================================================
+    // 配对窗口：6 位码 / 180s / 5 次失败
+    // ============================================================
 
     private static void windowChecks() {
         PairingStore s = new PairingStore(freshDir("win"));
@@ -112,17 +112,17 @@ public class PairingStoreTest {
         check("剩余时间不超过窗口上限",
                 s.remainingMs(t0) == PairingStore.WINDOW_MS);
 
-        
+        // 重开换新码（作废旧码）
         String code2 = s.openWindow(t0);
         check("重新开窗会换新码", code2 != null && code2.matches("[0-9]{6}"));
 
-        
+        // 过期即自动关窗
         long after = t0 + PairingStore.WINDOW_MS + 1;
         check("窗口过期后 isOpen 为假", !s.isOpen(after));
         check("窗口过期后 code() 返回 null", s.code(after) == null);
         check("窗口过期后剩余时间为 0", s.remainingMs(after) == 0L);
 
-        
+        // 失败次数用尽
         PairingStore f = new PairingStore(freshDir("win2"));
         long n = 500000L;
         f.openWindow(n);
@@ -133,27 +133,27 @@ public class PairingStoreTest {
         f.noteFailure(n);
         check("失败用尽（" + PairingStore.MAX_FAILURES + " 次）后窗口关闭", !f.isOpen(n));
 
-        
+        // 显式关窗
         PairingStore c = new PairingStore(freshDir("win3"));
         c.openWindow(n);
         c.closeWindow();
         check("显式关窗后 isOpen 为假", !c.isOpen(n));
     }
 
-    
-    
-    
+    // ============================================================
+    // 旧格式记录兼容（去加密后的关键回归）
+    // ============================================================
 
-    
-
-
-
-
-
-
+    /**
+     * 加解密移除时配对表的字段也跟着减了（去掉了 key/suite/enc）。表文件是**持久**
+     * 的，用户覆盖安装升级时它还在原地 —— 于是解析必须对未知/多余字段宽容。
+     *
+     * <p>否则症状是：升级后"已配对相机"列表空了、每台相机都要重新配对一次，
+     * 而用户完全不知道自己做错了什么。
+     */
     private static void legacyRecordChecks() {
         File dir = freshDir("legacy");
-        
+        // 旧版本写下的行：带 key/suite/enc 三个已废弃字段
         StringBuilder sb = new StringBuilder();
         sb.append("{\"id\":\"0a1b2c3d4e5f6071\",\"name\":\"Xiaomi 15\",\"model\":\"ILCE-6300\",")
                 .append("\"serial\":\"05186914\",\"key\":\"")
@@ -177,7 +177,7 @@ public class PairingStoreTest {
         check("旧格式记录可被按设备码命中",
                 s.contains(PtpCodec.unhex("0a1b2c3d4e5f6071")));
 
-        
+        // 重新落盘后不该再写回那些废弃字段
         s.touch(PtpCodec.unhex("0a1b2c3d4e5f6071"), "192.168.122.2", 15741, 65536);
         String text = readText(new File(dir, "pairings.json"));
         check("重新落盘后不再写出 key/suite/enc",
@@ -190,9 +190,9 @@ public class PairingStoreTest {
                                 new PairingStore(dir).find("0a1b2c3d4e5f6071").lastIp));
     }
 
-    
-    
-    
+    // ============================================================
+    // 配对表：增删查改 + 持久化
+    // ============================================================
 
     private static void tableChecks() {
         File dir = freshDir("tbl");
@@ -229,7 +229,7 @@ public class PairingStoreTest {
                 "ILCE-6300".equals(s.find(hexA).peerModel)
                         && "05186914".equals(s.find(hexA).peerSerial));
 
-        
+        // 落盘 → 新实例读回
         PairingStore re = new PairingStore(dir);
         check("配对表跨实例持久化（size）", re.size() == 1);
         check("配对表跨实例持久化（设备名一致）",
@@ -238,7 +238,7 @@ public class PairingStoreTest {
                 re.find(hexA) != null && "ILCE-6300".equals(re.find(hexA).peerModel)
                         && "05186914".equals(re.find(hexA).peerSerial));
 
-        
+        // upsert 保留首次配对时间
         PairingStore.Paired upd = re.find(hexA);
         upd.pairedAt = 0L;
         upd.lastSeenAt = now + 5000;
@@ -248,7 +248,7 @@ public class PairingStoreTest {
         check("upsert 更新了其它字段", "Xiaomi 15 Pro".equals(re.find(hexA).peerName));
         check("upsert 覆盖而非追加", re.size() == 1);
 
-        
+        // touch
         re.touch(devA, "192.168.122.9", 15740, (1 << 16));
         PairingStore.Paired touched = re.find(hexA);
         check("touch 更新 lastIp/port/proto",
@@ -258,27 +258,27 @@ public class PairingStoreTest {
         check("touch 不动名称", "Xiaomi 15 Pro".equals(touched.peerName));
         check("touch 未配对的设备是空操作（不新增记录）", re.size() == 1);
 
-        
+        // 空设备码 → 拒绝落表（原先是"密钥长度非 32 被拒"，密钥没了这条守着同一处）
         int before = re.size();
         PairingStore.Paired noId = new PairingStore.Paired();
         noId.peerDeviceId = "";
         re.upsert(noId);
         check("空设备码的条目被拒绝", re.size() == before && !re.contains(devB));
 
-        
+        // remove
         check("remove 首次返回 true", re.remove(hexA));
         check("remove 后表为空", re.size() == 0 && !re.contains(devA));
         check("remove 重复调用返回 false", !re.remove(hexA));
 
-        
+        // clear
         re.upsert(p);
         re.clear();
         check("clear 清空整表", re.size() == 0);
     }
 
-    
-    
-    
+    // ============================================================
+    // 坏数据容错：一行写坏不能让整张表消失
+    // ============================================================
 
     private static void corruptDataChecks() {
         File dir = freshDir("corrupt");
@@ -293,7 +293,7 @@ public class PairingStoreTest {
         good.peerName = "Good";
         s.upsert(good);
 
-        
+        // 三类脏行：非 JSON、JSON 但缺 id、JSON 但 id 为空
         StringBuilder sb = new StringBuilder();
         sb.append("这不是 JSON\n");
         sb.append("{\"name\":\"没有 id\"}\n");
@@ -303,7 +303,7 @@ public class PairingStoreTest {
         PairingStore re = new PairingStore(dir);
         check("文件被脏行占满时表为空但不抛异常", re.size() == 0);
 
-        
+        // 好行 + 脏行混排 → 只丢脏行
         StringBuilder mixed = new StringBuilder();
         mixed.append("垃圾行\n");
         mixed.append("{\"id\":\"").append(PtpCodec.hex(dev))
@@ -317,9 +317,9 @@ public class PairingStoreTest {
         check("脏行混排时无 id 的坏行被丢弃", re2.find("") == null);
     }
 
-    
-    
-    
+    // ============================================================
+    // 编解码边界
+    // ============================================================
 
     private static void codecEdgeChecks() {
         byte[] seq = bytes((byte) 0x01, 16);

@@ -17,23 +17,23 @@ import com.sony.wifi.p2p.WifiP2pExtManager;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-
-
-
-
-
-
+/**
+ * SDK≥16 路线：照抄官方 WifiP2pManagerJb ——
+ * WifiP2pExtManager（扩展 API）+ 标准 WifiP2pManager（同一系统服务对象的两份引用），
+ * 专属 Looper 线程持 Channel，所有操作 CountDownLatch 同步化，
+ * 原始 p2p 广播翻译成归一化事件。
+ */
 public class RadioWrapperJb implements RadioWrapper {
 
     private static final String TAG = "RadioWrapperJb";
-    
+    // 官方是无限等；Direct 使能涉及驱动模式切换可能较慢，给足余量，仅防极端卡死
     private static final long LATCH_TIMEOUT_MS = 20000;
     private static final long LATCH_TIMEOUT_QUERY_MS = 10000;
 
     private final Context ctx;
-    private final WifiP2pManager p2pManager;      
-    private final WifiP2pExtManager extManager;   
-    
+    private final WifiP2pManager p2pManager;      // 标准 API：initialize/createGroup/requestGroupInfo
+    private final WifiP2pExtManager extManager;   // 扩展 API：isDirectEnabled 探测（可选）
+    /** 最近一次操作失败的细节，供界面诊断显示 */
     private volatile String lastError = "";
 
     public String getLastError() { return lastError; }
@@ -47,9 +47,9 @@ public class RadioWrapperJb implements RadioWrapper {
         Object svc = safeGet(appContext, "wifip2p");
         if (svc instanceof WifiP2pExtManager) {
             this.extManager = (WifiP2pExtManager) svc;
-            this.p2pManager = (WifiP2pManager) svc;   
+            this.p2pManager = (WifiP2pManager) svc;   // 运行时 ExtManager extends WPM
         } else {
-            
+            // 非索尼设备/异常环境：退化两引用，全部操作失败但不崩溃
             this.extManager = null;
             this.p2pManager = null;
         }
@@ -65,7 +65,7 @@ public class RadioWrapperJb implements RadioWrapper {
             }
         }, f);
 
-        
+        // 专用 Looper 线程持有 Channel（官方 P2pLooperThread 同款）
         if (p2pManager != null) {
             new Thread(new Runnable() {
                 @Override
@@ -99,7 +99,7 @@ public class RadioWrapperJb implements RadioWrapper {
         }
     }
 
-    
+    /** 命令级同步监听器：等 onSuccess/onFailure 到达 */
     private static class SyncAction implements WifiP2pManager.ActionListener {
         final CountDownLatch latch = new CountDownLatch(1);
         boolean ok;
@@ -130,8 +130,8 @@ public class RadioWrapperJb implements RadioWrapper {
         }
     }
 
-    
-
+    /** 反射调用 setDirectEnabled(Channel,boolean,ActionListener)。typed 直调在本固件上
+     *  应答回调迟迟不派发，唯一验证可用的是 v1.0/v1.1 的反射通道。 */
     public boolean setDirectEnabled(boolean enable) {
         if (!awaitChannel()) {
             lastError = "wifip2p服务/Channel不可用";
@@ -158,10 +158,10 @@ public class RadioWrapperJb implements RadioWrapper {
         }
     }
 
-    
-
-
-
+    /**
+     * 仅把关闭命令投递出去、不等服务应答 —— 断电竞速窗口专用：
+     * 进程随时可能被杀，同步等 latch 反而会把关键清理堵死在前面。
+     */
     public void issueDirectOff() {
         try {
             if (!awaitChannel()) return;
@@ -171,8 +171,8 @@ public class RadioWrapperJb implements RadioWrapper {
         } catch (Throwable ignored) {}
     }
 
-    
-
+    /** 拆解 GO 组：标准 WifiP2pManager.removeGroup，等服务应答（≤8s）。
+     *  这是唯一确保组壳（仍在广播的 SSID）真正消失的命令。 */
     public void removeGroup() {
         if (!awaitChannel()) return;
         try {
@@ -204,7 +204,7 @@ public class RadioWrapperJb implements RadioWrapper {
         }
         WifiP2pGroup g = l.await(LATCH_TIMEOUT_QUERY_MS);
         if (g == null || g.getNetworkName() == null) return null;
-        
+        // networkId 无从取得：沿用官方 getConfigurations 的做法填常量 1（Jb 路径 startGo 不真正使用该值）
         return new GroupConfig(g.getNetworkName(), g.getPassphrase(), 1);
     }
 
@@ -253,7 +253,7 @@ public class RadioWrapperJb implements RadioWrapper {
         try { op.run(); } catch (Throwable ignored) {}
     }
 
-    
+    // ===== 原始广播 → 归一化事件（官方 handleEvent 移植）=====
 
     private void handleRaw(Context c, Intent i) {
         String a = i.getAction();
@@ -285,7 +285,7 @@ public class RadioWrapperJb implements RadioWrapper {
         }
     }
 
-    
+    // 官方 checkStationConnected 精简移植：维护唯一客户端连接状态并广播
     private void checkStationConnected(Context c) {
         WifiP2pGroup g = peekGroup();
         String next = "";

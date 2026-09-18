@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-
-
-
-
-
-
-
-
-
+<!--
+  设置菜单行（SetMenu 真值 menu_set_adapter.xml）：473×49。
+  结构照抄原厂：**焦点图案是行内的一个 ImageView 图层**（tag=selectable_background，
+  match_parent + centerInParent + FIT_XY），不是行的 background ——
+  用 background 装 9-patch 会让宿主 View 继承它的内边距，把行内文字整体挤偏
+  （面板就是这么被我挤下去的 85px，见 tools/ui/dump_patch9_apk.py 的说明）。
+  然后：前导单选圆点 21×28（alignParentLeft + centerVertical）+ 标签（toRightOf 圆点，
+  marginLeft 16，42px）。
+-->
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="473px"
     android:layout_height="49px">

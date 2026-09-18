@@ -12,12 +12,12 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 
-
-
-
-
-
-
+/**
+ * 桌面真验证（JDK8）：用真样本 DSC01781.ARW / DSC01779.JPG 跑完整链路。
+ * 1) ThumbnailExtractor 提取的 4 段 JPEG 边界/长度断言（长度为交接文档实测值）
+ * 2) EXIF 信息兜底读取
+ * 3) FtpServer 虚拟路径 RETR/REST/SIZE、逃逸拦截、REST 无残留
+ */
 public class TestMain {
 
     private static int passed = 0;
@@ -31,7 +31,7 @@ public class TestMain {
             System.exit(2);
         }
 
-        
+        // ===== 1. 提取器单元断言 =====
         byte[] arwSmall = ThumbnailExtractor.extractSmall(arwSrc);
         check("ARW 小图存在", arwSmall != null);
         check("ARW 小图 SOI", arwSmall != null && (arwSmall[0] & 0xFF) == 0xFF && (arwSmall[1] & 0xFF) == 0xD8);
@@ -59,7 +59,7 @@ public class TestMain {
         check("JPG EXIF model=ILCE-6300", ji != null && "ILCE-6300".equals(ji.model));
         check("JPG EXIF 镜头名", ji != null && ji.lens != null && ji.lens.contains("OSS"));
 
-        
+        // ===== 2. FTP 集成 =====
         File root = Files.createTempDirectory("sc-test-root").toFile();
         File dcim = new File(root, "DCIM/100MSDCF");
         dcim.mkdirs();
@@ -142,7 +142,7 @@ public class TestMain {
         }
     }
 
-    
+    /** 迷你 FTP 客户端：只实现本次测试需要的命令（PASV/TYPE/RETR/REST/SIZE/QUIT） */
     private static class MiniFtp {
         private final Socket ctrl;
         private final InputStream in;
@@ -154,7 +154,7 @@ public class TestMain {
             ctrl.connect(new InetSocketAddress(InetAddress.getByName(host), port), 3000);
             in = ctrl.getInputStream();
             out = ctrl.getOutputStream();
-            readReply(); 
+            readReply(); // banner
         }
 
         private String readReply() throws Exception {
@@ -166,7 +166,7 @@ public class TestMain {
                 if (b == '\n') {
                     String s = resp.toString();
                     if (s.length() >= 4 && s.charAt(3) == ' ') return s;
-                    if (s.length() >= 4 && s.charAt(3) == '-') continue; 
+                    if (s.length() >= 4 && s.charAt(3) == '-') continue; // 多行，简化处理
                 }
             }
             return resp.toString();
@@ -200,7 +200,7 @@ public class TestMain {
             return hi * 256 + lo;
         }
 
-        
+        /** RETR 带可选 REST；返回收到的字节（数据连接 EOF 后等最终回复） */
         byte[] retr(String path, long rest) throws Exception {
             if (rest > 0) {
                 String r = cmd("REST " + rest);
@@ -216,12 +216,12 @@ public class TestMain {
             int n;
             while ((n = din.read(buf)) > 0) bos.write(buf, 0, n);
             data.close();
-            r = readReply(); 
+            r = readReply(); // 226
             if (!r.startsWith("226")) throw new IllegalStateException("after RETR: " + r);
             return bos.toByteArray();
         }
 
-        
+        /** RETR 只取首行回复（负路径用），丢弃数据连接 */
         String retrRaw(String path) throws Exception {
             int p = pasvPort();
             String r = cmd("RETR " + path);
@@ -229,7 +229,7 @@ public class TestMain {
                 Socket data = new Socket(InetAddress.getByName("127.0.0.1"), p);
                 InputStream din = data.getInputStream();
                 byte[] buf = new byte[4096];
-                while (din.read(buf) > 0) {  }
+                while (din.read(buf) > 0) { /* 排干 */ }
                 data.close();
                 readReply();
             }
