@@ -72,6 +72,20 @@ object PtpCodec {
     const val OP_THUMB_QUEUE_PAUSE = 0x9024
     const val OP_THUMB_QUEUE_RESUME = 0x9025
     const val OP_THUMB_QUEUE_CANCEL = 0x9026
+
+    const val OP_REC_ENTER = 0x9030
+    const val OP_REC_LEAVE = 0x9031
+    const val OP_REC_GET_STATE = 0x9032
+    const val OP_LV_START = 0x9033
+    const val OP_LV_STOP = 0x9034
+    const val OP_SHOOT = 0x9035
+    const val OP_AF_HALF = 0x9036
+    const val OP_AF_CANCEL = 0x9037
+    const val OP_ZOOM = 0x9038
+    const val OP_SET_PROP = 0x9039
+    const val OP_TOUCH_AF = 0x903A
+    const val OP_MOVIE_START = 0x903B
+    const val OP_MOVIE_STOP = 0x903C
     
     
     
@@ -107,6 +121,7 @@ object PtpCodec {
 
 
     const val EV_MODE_SWITCHING = 0x9044
+    const val EV_REC = 0x9045
 
     
     const val RC_OK = 0x2001

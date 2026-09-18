@@ -100,6 +100,20 @@ public final class PtpCodec {
     public static final int OP_THUMB_QUEUE_PAUSE = 0x9024;
     public static final int OP_THUMB_QUEUE_RESUME = 0x9025;
     public static final int OP_THUMB_QUEUE_CANCEL = 0x9026;
+
+    public static final int OP_REC_ENTER = 0x9030;
+    public static final int OP_REC_LEAVE = 0x9031;
+    public static final int OP_REC_GET_STATE = 0x9032;
+    public static final int OP_LV_START = 0x9033;
+    public static final int OP_LV_STOP = 0x9034;
+    public static final int OP_SHOOT = 0x9035;
+    public static final int OP_AF_HALF = 0x9036;
+    public static final int OP_AF_CANCEL = 0x9037;
+    public static final int OP_ZOOM = 0x9038;
+    public static final int OP_SET_PROP = 0x9039;
+    public static final int OP_TOUCH_AF = 0x903A;
+    public static final int OP_MOVIE_START = 0x903B;
+    public static final int OP_MOVIE_STOP = 0x903C;
     
     
     
@@ -138,6 +152,7 @@ public final class PtpCodec {
 
 
     public static final int EV_MODE_SWITCHING = 0x9044;
+    public static final int EV_REC = 0x9045;
     
     public static final int MODE_CODE_WIFI = 0;
     
