@@ -366,10 +366,30 @@ public final class RecSession {
             }
             try {
                 if ("fnumber".equals(key)) {
+                    if ("+".equals(value)) {
+                        boolean ok = invokeSilent(cameraEx, "incrementAperture", null, null);
+                        if (ok) emit(EV_PROP, 0, 0);
+                        return ok;
+                    }
+                    if ("-".equals(value)) {
+                        boolean ok = invokeSilent(cameraEx, "decrementAperture", null, null);
+                        if (ok) emit(EV_PROP, 0, 0);
+                        return ok;
+                    }
                     return stepToward("getAperture", "incrementAperture", "decrementAperture",
                             parseAperture(value));
                 }
                 if ("shutter".equals(key)) {
+                    if ("+".equals(value)) {
+                        boolean ok = invokeSilent(cameraEx, "incrementShutterSpeed", null, null);
+                        if (ok) emit(EV_PROP, 0, 0);
+                        return ok;
+                    }
+                    if ("-".equals(value)) {
+                        boolean ok = invokeSilent(cameraEx, "decrementShutterSpeed", null, null);
+                        if (ok) emit(EV_PROP, 0, 0);
+                        return ok;
+                    }
                     return stepShutter(value);
                 }
                 Camera.Parameters p = camera == null ? null : camera.getParameters();

@@ -403,12 +403,86 @@ class PtpIpClient(
         return r.code == PtpCodec.RC_OK
     }
 
+    @Throws(IOException::class)
+    fun recEnter() {
+        val r = request(PtpCodec.opReq(PtpCodec.DP_NONE, PtpCodec.OP_REC_ENTER, nextTx(), null), 15000)
+        checkOk(r)
+    }
+
+    @Throws(IOException::class)
+    fun recLeave() {
+        val r = request(PtpCodec.opReq(PtpCodec.DP_NONE, PtpCodec.OP_REC_LEAVE, nextTx(), null))
+        checkOk(r)
+    }
+
+    @Throws(IOException::class)
+    fun recState(): ByteArray {
+        val r = request(PtpCodec.opReq(PtpCodec.DP_NONE, PtpCodec.OP_REC_GET_STATE, nextTx(), null))
+        checkOk(r)
+        return r.blob
+    }
+
+    @Throws(IOException::class)
+    fun recLvStart(): Int {
+        val r = request(PtpCodec.opReq(PtpCodec.DP_NONE, PtpCodec.OP_LV_START, nextTx(), null))
+        checkOk(r)
+        if (r.params.isEmpty()) throw PtpProtocolException("LV_START 未返回端口")
+        return r.params[0]
+    }
+
+    @Throws(IOException::class)
+    fun recLvStop() {
+        val r = request(PtpCodec.opReq(PtpCodec.DP_NONE, PtpCodec.OP_LV_STOP, nextTx(), null))
+        checkOk(r)
+    }
+
+    @Throws(IOException::class)
+    fun recShoot(): String {
+        val r = request(PtpCodec.opReq(PtpCodec.DP_NONE, PtpCodec.OP_SHOOT, nextTx(), null), 25000)
+        checkOk(r)
+        return r.blob.toString(Charsets.UTF_8)
+    }
+
+    @Throws(IOException::class)
+    fun recAf(on: Boolean) {
+        val op = if (on) PtpCodec.OP_AF_HALF else PtpCodec.OP_AF_CANCEL
+        val r = request(PtpCodec.opReq(PtpCodec.DP_NONE, op, nextTx(), null), 12000)
+        checkOk(r)
+    }
+
+    @Throws(IOException::class)
+    fun recZoom(dir: Int, speed: Int) {
+        val r = request(PtpCodec.opReq(PtpCodec.DP_NONE, PtpCodec.OP_ZOOM, nextTx(), intArrayOf(dir, speed)))
+        checkOk(r)
+    }
+
+    @Throws(IOException::class)
+    fun recSetProp(key: String, value: String) {
+        val r = request(PtpCodec.opReqBlob(PtpCodec.OP_SET_PROP, nextTx(), pathBytes("$key=$value")))
+        checkOk(r)
+    }
+
+    @Throws(IOException::class)
+    fun recTouchAf(xMilli: Int, yMilli: Int) {
+        val r = request(PtpCodec.opReq(PtpCodec.DP_NONE, PtpCodec.OP_TOUCH_AF, nextTx(), intArrayOf(xMilli, yMilli)))
+        checkOk(r)
+    }
+
+    @Throws(IOException::class)
+    fun recMovie(start: Boolean) {
+        val op = if (start) PtpCodec.OP_MOVIE_START else PtpCodec.OP_MOVIE_STOP
+        val r = request(PtpCodec.opReq(PtpCodec.DP_NONE, op, nextTx(), null), 15000)
+        checkOk(r)
+    }
+
     private fun checkOk(r: OpResult) {
         if (r.code != PtpCodec.RC_OK) {
             if (r.code == CODE_LOCAL_CLOSED) {
                 throw PtpProtocolException("连接已关闭，未收到相机应答")
             }
-            throw PtpProtocolException("相机回错误码 0x${Integer.toHexString(r.code)}")
+            val extra = r.blob.takeIf { it.isNotEmpty() }?.toString(Charsets.UTF_8)
+            val hex = "0x${Integer.toHexString(r.code)}"
+            throw PtpProtocolException(if (extra.isNullOrBlank()) "相机回错误码 $hex" else extra)
         }
     }
 

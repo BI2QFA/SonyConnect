@@ -346,6 +346,62 @@ object ObjectRepository {
         false
     }
 
+    fun recEnter(host: String) {
+        ioExecutor.submit<Boolean> { requireClient(host).recEnter(); true }.get()
+    }
+
+    fun recLeave(host: String) {
+        try {
+            ioExecutor.submit<Boolean> { requireClient(host).recLeave(); true }.get()
+        } catch (e: Exception) {
+            Log.d(TAG, "recLeave failed: ${e.message}")
+        }
+    }
+
+    fun recState(host: String): JSONObject? = try {
+        ioExecutor.submit<JSONObject?> {
+            val bytes = requireClient(host).recState()
+            runCatching { JSONObject(String(bytes, Charsets.UTF_8)) }.getOrNull()
+        }.get()
+    } catch (e: Exception) {
+        Log.d(TAG, "recState failed: ${e.message}")
+        null
+    }
+
+    fun recLvStart(host: String): Int =
+        ioExecutor.submit<Int> { requireClient(host).recLvStart() }.get()
+
+    fun recLvStop(host: String) {
+        try {
+            ioExecutor.submit<Boolean> { requireClient(host).recLvStop(); true }.get()
+        } catch (e: Exception) {
+            Log.d(TAG, "recLvStop failed: ${e.message}")
+        }
+    }
+
+    fun recShoot(host: String): String =
+        ioExecutor.submit<String> { requireClient(host).recShoot() }.get()
+
+    fun recAf(host: String, on: Boolean) {
+        ioExecutor.submit<Boolean> { requireClient(host).recAf(on); true }.get()
+    }
+
+    fun recZoom(host: String, dir: Int, speed: Int) {
+        ioExecutor.submit<Boolean> { requireClient(host).recZoom(dir, speed); true }.get()
+    }
+
+    fun recSetProp(host: String, key: String, value: String) {
+        ioExecutor.submit<Boolean> { requireClient(host).recSetProp(key, value); true }.get()
+    }
+
+    fun recTouchAf(host: String, xMilli: Int, yMilli: Int) {
+        ioExecutor.submit<Boolean> { requireClient(host).recTouchAf(xMilli, yMilli); true }.get()
+    }
+
+    fun recMovie(host: String, start: Boolean) {
+        ioExecutor.submit<Boolean> { requireClient(host).recMovie(start); true }.get()
+    }
+
     
     internal fun parseEntries(json: String, dir: String): List<FtpEntry> {
         val text = json.trim()

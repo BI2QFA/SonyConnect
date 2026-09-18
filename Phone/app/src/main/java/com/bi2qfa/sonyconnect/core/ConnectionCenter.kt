@@ -134,6 +134,12 @@ object ConnectionCenter {
             PtpCodec.EV_PAIRED_REMOVED -> onPairRemovedByCamera()
             PtpCodec.EV_APP_EXITING -> onCameraExiting()
             PtpCodec.EV_MODE_SWITCHING -> onCameraModeSwitching(params)
+            PtpCodec.EV_REC -> {
+                val a = params?.getOrNull(0) ?: 0
+                val b = params?.getOrNull(1) ?: 0
+                val c = params?.getOrNull(2) ?: 0
+                RecController.onRecEvent(a, b, c)
+            }
         }
     }
 
@@ -632,6 +638,7 @@ object ConnectionCenter {
     private fun rollback() {
         ObjectRepository.closeAll()
         DeviceStore.clear()
+        RecController.reset()
     }
 
     
