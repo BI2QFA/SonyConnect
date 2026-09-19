@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-
+<!-- FileProvider 共享路径：应用专属下载目录（未选 SAF 目录时的默认落盘处） -->
 <paths>
     <external-files-path name="downloads" path="SonyConnect/" />
     <files-path name="downloads-internal" path="SonyConnect/" />

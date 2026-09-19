@@ -1,22 +1,31 @@
-// 根构建脚本：声明 Android Gradle 插件（老版本，与相机老 Android 匹配）
-buildscript {
-    repositories {
-        // 国内镜像加速（阿里云），非国内环境可删除这几行
-        maven { url 'https://maven.aliyun.com/repository/google' }
-        maven { url 'https://maven.aliyun.com/repository/central' }
-        google()
-        mavenCentral()
+apply plugin: 'com.android.application'
+
+android {
+    compileSdkVersion 15
+    buildToolsVersion '26.0.2'
+
+    defaultConfig {
+        applicationId "com.bi2qfa.sonyconnect"
+        minSdkVersion 10
+        targetSdkVersion 10
+        versionCode 1
+        versionName "2.5"
     }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:3.0.1'
+
+    sourceCompatibility = JavaVersion.VERSION_1_6
+    targetCompatibility = JavaVersion.VERSION_1_6
+
+    // 不压缩 png，保证换装素材 1:1 进包（9-patch 的 marker 边框一个字节都不能被动）
+    aaptOptions {
+        cruncherEnabled = false
+    }
+
+    packagingOptions {
+        // 编译桩绝不进 APK（真机用框架里的真实类解析）
+        exclude 'com/sony/**'
     }
 }
 
-allprojects {
-    repositories {
-        maven { url 'https://maven.aliyun.com/repository/google' }
-        maven { url 'https://maven.aliyun.com/repository/central' }
-        google()
-        mavenCentral()
-    }
+dependencies {
+    compileOnly files('libs/stubs.jar')
 }

@@ -48,6 +48,7 @@ import com.bi2qfa.sonyconnect.R
 import com.bi2qfa.sonyconnect.core.ConnectionCenter
 import com.bi2qfa.sonyconnect.data.PairingStore
 import com.bi2qfa.sonyconnect.data.SettingsRepo
+import com.bi2qfa.sonyconnect.ui.components.CardCorner
 import com.bi2qfa.sonyconnect.ui.components.Chevron
 import com.bi2qfa.sonyconnect.ui.components.GroupCard
 import com.bi2qfa.sonyconnect.ui.components.IconCircle
@@ -58,33 +59,34 @@ import com.bi2qfa.sonyconnect.ui.components.SettingsRow
 import com.bi2qfa.sonyconnect.ui.components.SwitchRow
 import com.bi2qfa.sonyconnect.ui.theme.IconTints
 import com.bi2qfa.sonyconnect.ui.theme.Seeds
+import com.bi2qfa.sonyconnect.ui.components.MsIcon
 
-
-
-
-
-
-
-
+/**
+ * 设置的页面栈。**一级页只放入口**（一行一件事，行尾一个 "›"），
+ * 具体开关搬到二级页 —— 用户反馈原话："设置所有设置项不要全都露在外面，
+ * 要有点进去的二级页面"。
+ *
+ * 顶栏的标题与返回箭头由 `MainActivity` 按这个枚举决定（返回箭头回到上一级）。
+ */
 enum class SettingsPage(val title: String) {
     Hub("设置"),
     Cameras("已配对相机"),
     Files("文件保存位置"),
     Appearance("外观"),
     About("关于"),
-    
+    // 打赏：从"关于"页进来（二级页），顶栏标题"打赏"
     Reward("打赏"),
 }
 
-
-
-
-
-
-
-
-
-
+/**
+ * 设置页（一级 = 入口列表；二级 = 具体设置项）。
+ *
+ * 版式照参考图的 Google 账号设置页：**一屏都是"入口行"**（左彩色圆片 + 标题 +
+ * 一行说明这页里有什么 + 行尾 "›"），行按语义**成组**（外圈大圆角、段间一道细缝）。
+ *
+ * ★ 说明行不是套话：参考图里每一行的副标题都在**列出这一页里能改什么**
+ *   （"支付方式、交易"／"姓名、邮箱、电话、地址"）。这里照做，用户不用点进去就知道去哪儿找。
+ */
 @Composable
 fun SettingsScreen(
     page: SettingsPage,
@@ -102,28 +104,28 @@ fun SettingsScreen(
             SettingsPage.Cameras -> CamerasPage(onOpenPairing)
             SettingsPage.Files -> FilesPage()
             SettingsPage.Appearance -> AppearancePage()
-            
+            // 关于页要把"打赏"作为下一级入口，所以把 onNavigate 传下去
             SettingsPage.About -> AboutPage(onNavigate)
             SettingsPage.Reward -> RewardPage()
         }
     }
 }
 
-
-
-
-
-
-
+/**
+ * 一级页：三组。
+ *
+ * ★ 「传输」那一栏已按用户要求**整栏删除**（连它二级页里那个
+ *   "传输完成后自动关闭相机端"开关一起，两端都删了）。
+ */
 @Composable
 private fun SettingsHub(onNavigate: (SettingsPage) -> Unit) {
-    
+    // 相机自己一组：它是这个软件的主角，和"文件"那些配套设施不是一类
     SettingsGroup {
         SettingsRow(
             index = 0, count = 1,
             title = "相机",
             support = "已配对相机、配对新相机",
-            leading = { IconCircle(R.drawable.ic_camera, IconTints.Blue) },
+            leading = { IconCircle(MsIcon.CAMERA, IconTints.Accent) },
             trailing = { Chevron() },
             onClick = { onNavigate(SettingsPage.Cameras) },
         )
@@ -133,7 +135,7 @@ private fun SettingsHub(onNavigate: (SettingsPage) -> Unit) {
             index = 0, count = 1,
             title = "文件",
             support = "文件保存位置",
-            leading = { IconCircle(R.drawable.ic_nav_files, IconTints.Amber) },
+            leading = { IconCircle(MsIcon.NAV_FILES, IconTints.Accent) },
             trailing = { Chevron() },
             onClick = { onNavigate(SettingsPage.Files) },
         )
@@ -143,7 +145,7 @@ private fun SettingsHub(onNavigate: (SettingsPage) -> Unit) {
             index = 0, count = 2,
             title = "外观",
             support = "跟随系统主题色、调色盘、深浅色",
-            leading = { IconCircle(R.drawable.ic_palette_dots, IconTints.Pink) },
+            leading = { IconCircle(MsIcon.PALETTE_DOTS, IconTints.Accent) },
             trailing = { Chevron() },
             onClick = { onNavigate(SettingsPage.Appearance) },
         )
@@ -151,18 +153,18 @@ private fun SettingsHub(onNavigate: (SettingsPage) -> Unit) {
             index = 1, count = 2,
             title = "关于",
             support = "版本信息、开发者、打赏",
-            leading = { IconCircle(R.drawable.ic_info, IconTints.Cyan) },
+            leading = { IconCircle(MsIcon.INFO, IconTints.Accent) },
             trailing = { Chevron() },
             onClick = { onNavigate(SettingsPage.About) },
         )
     }
 }
 
-
+/** 二级页：已配对相机（解除配对 / 切设备 / 配新的）。 */
 @Composable
 private fun CamerasPage(onOpenPairing: () -> Unit) {
     val context = LocalContext.current
-    
+    // 待确认解除的相机（非空即弹确认框）
     var pendingUnpair by remember { mutableStateOf<String?>(null) }
     val cameras = PairingStore.cameras
 
@@ -174,7 +176,7 @@ private fun CamerasPage(onOpenPairing: () -> Unit) {
             title = { Text("解除配对？") },
             text = {
                 Text(
-                    
+                    // 用户定版：只说"解除配对"，不再解释重连要重新取码
                     "将解除与「${if (cam != null) labelOf(cam) else id}」的配对。",
                 )
             },
@@ -198,7 +200,7 @@ private fun CamerasPage(onOpenPairing: () -> Unit) {
                 index = 0, count = 1,
                 title = "尚无已配对相机",
                 support = "在相机上进入配对模式",
-                leading = { IconCircle(R.drawable.ic_camera, IconTints.Pink) },
+                leading = { IconCircle(MsIcon.CAMERA, IconTints.Accent) },
             )
         }
     } else {
@@ -206,15 +208,15 @@ private fun CamerasPage(onOpenPairing: () -> Unit) {
             cameras.forEachIndexed { idx, cam ->
                 val connectedGuid = ConnectionCenter.camera?.guidHex
                 val connected = cam.peerDeviceId.equals(connectedGuid, ignoreCase = true)
-                
-                
-                
-                
-                
-                
-                
-                
-                
+                // ★ 这一组**不用 [SettingsRow]（= 库的 ListItem）**，改用自己的 Row：
+                //   ListItem 在有 supportingContent 时把 leading 对齐到**文字块的顶边**
+                //   （不是行高的中线）。两行文字时那点差看不出（44dp 圆片 vs ~40dp 文字块），
+                //   而这个说明是**三行**（型号 / 状态+SN / 设备码），实测圆片中心比整行中心
+                //   高 23.5px ≈ 12dp —— 用户一眼就看出来了（"图标不在所属框的纵轴中央"）。
+                //   换成 Row(verticalAlignment = CenterVertically) 之后，圆片按整行居中，
+                //   与传输页那种两行卡片的做法也一致。
+                //   形状与底色仍走同一套分段件（segmentShape / segmentSurfaceColor），
+                //   所以"几小块拼一大块"的外观不变。
                 Segment(
                     index = idx, count = cameras.size,
                     onClick = { ConnectionCenter.switchTo(context, cam.peerDeviceId) },
@@ -225,26 +227,26 @@ private fun CamerasPage(onOpenPairing: () -> Unit) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         IconCircle(
-                            R.drawable.ic_camera,
-                            if (connected) IconTints.Green else IconTints.Blue,
+                            MsIcon.CAMERA,
+                            IconTints.Accent,
                         )
                         Spacer(Modifier.width(16.dp))
                         Column(Modifier.weight(1f)) {
-                            
-                            
-                            
+                            // 标题只放型号（用户定版那条"相机型号 + SN"整串放不进这一行：
+                            // 行首 44dp 圆片 + 行尾垃圾桶吃掉了大半宽度，写成一整串会被截断，
+                            // 而 SN 恰恰是不能被截掉的那一段）。
                             Text(
                                 cam.peerModel.ifBlank { cam.peerName }.ifBlank { "未知相机" },
                                 style = MaterialTheme.typography.titleMedium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            
-                            
-                            
-                            
-                            
-                            
+                            // ★ 设备码要显示（用户定版：同一个机身换过设备码时，配对表里会有
+                            //   多条型号+SN 完全一样的记录，靠它才分得清该解除哪一条），
+                            //   但**不能让它自己折行**：原来 `已连接 · SN:05186914 · e0fa60c4`
+                            //   挤不下就断在半截处（用户反馈"换行了、不美观"）。这里**显式
+                            //   分两行**：第一行状态+SN，第二行用"设备码 xxx"起头 ——
+                            //   断点由我们定，那串十六进制也有了名分。
                             Text(
                                 buildString {
                                     append(if (connected) "已连接" else "未连接")
@@ -268,7 +270,7 @@ private fun CamerasPage(onOpenPairing: () -> Unit) {
                             }
                         }
                         RowIconAction(
-                            R.drawable.ic_trash,
+                            MsIcon.TRASH,
                             "解除配对",
                             onClick = { pendingUnpair = cam.peerDeviceId },
                             tint = MaterialTheme.colorScheme.error,
@@ -284,14 +286,14 @@ private fun CamerasPage(onOpenPairing: () -> Unit) {
             index = 0, count = 1,
             title = "配对新相机",
             support = "输入配对码与相机配对",
-            leading = { IconCircle(R.drawable.ic_add, IconTints.Green) },
+            leading = { IconCircle(MsIcon.ADD, IconTints.Accent) },
             trailing = { Chevron() },
             onClick = onOpenPairing,
         )
     }
 }
 
-
+/** 二级页：文件保存位置。 */
 @Composable
 private fun FilesPage() {
     val context = LocalContext.current
@@ -319,7 +321,7 @@ private fun FilesPage() {
                     "当前：应用目录（Android/data/com.bi2qfa.sonyconnect）"
                 else -> "当前：" + SettingsRepo.downloadDirLabel()
             },
-            leading = { IconCircle(R.drawable.ic_nav_files, IconTints.Amber) },
+            leading = { IconCircle(MsIcon.NAV_FILES, IconTints.Accent) },
             trailing = { Chevron() },
             onClick = { treePicker.launch(null) },
         )
@@ -330,14 +332,14 @@ private fun FilesPage() {
                 index = 0, count = 1,
                 title = "恢复默认目录",
                 support = "恢复到默认下载目录，已经下载的文件不会被移动或删除",
-                leading = { IconCircle(R.drawable.ic_refresh, IconTints.Cyan) },
+                leading = { IconCircle(MsIcon.REFRESH, IconTints.Accent) },
                 onClick = { SettingsRepo.updateDownloadTreeUri("") },
             )
         }
     }
 }
 
-
+/** 二级页：外观。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AppearancePage() {
@@ -351,14 +353,14 @@ private fun AppearancePage() {
         )
     }
     if (!SettingsRepo.dynamicColor) {
-        
-        
+        // 色点行**自己是一段**（不是挂在标签行下面的 extra）：分组列表的原生写法就是
+        // 一段一件事，段的形状由库按 index/count 算，两段天生同形、中间自带那道缝
         SettingsGroup {
             SettingsRow(
                 index = 0, count = 2,
                 title = "调色盘",
                 support = SeedNames.getOrElse(SettingsRepo.seedIndex) { "" },
-                leading = { IconCircle(R.drawable.ic_palette_dots, IconTints.Pink) },
+                leading = { IconCircle(MsIcon.PALETTE_DOTS, IconTints.Accent) },
             )
             Segment(index = 1, count = 2) {
                 Row(
@@ -388,7 +390,7 @@ private fun AppearancePage() {
                 2 -> "当前：深色"
                 else -> "当前：跟随系统"
             },
-            leading = { IconCircle(R.drawable.ic_contrast, IconTints.Cyan) },
+            leading = { IconCircle(MsIcon.CONTRAST, IconTints.Accent) },
         )
         Segment(index = 1, count = 2) {
             Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp)) {
@@ -407,7 +409,7 @@ private fun AppearancePage() {
     }
 }
 
-
+/** 二级页：关于。 */
 @Composable
 private fun AboutPage(onNavigate: (SettingsPage) -> Unit) {
     val context = LocalContext.current
@@ -427,9 +429,9 @@ private fun AboutPage(onNavigate: (SettingsPage) -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            
-            
-            
+            // ★ 本机设备码（用户要求：加在"开发者"下方，与相机端关于页同一版式）：
+            //   取 IdentityRepo 落盘的那 16 位 hex 的**前 8 位** —— 与相机端那份"本机
+            //   设备码"对仗，排障时两头各报一个码就能对上谁是谁。
             Text(
                 "本机设备码：${ConnectionCenter.shortCode(IdentityRepo.deviceId)}",
                 style = MaterialTheme.typography.bodyMedium,
@@ -438,27 +440,27 @@ private fun AboutPage(onNavigate: (SettingsPage) -> Unit) {
         }
     }
 
-    
+    // 打赏入口：单独一组（它不是"关于"正文的一部分，而是一个动作）
     SettingsGroup {
         SettingsRow(
             index = 0, count = 1,
             title = "打赏",
-            
+            // 与打赏页里那句说明**同一句话**（用户改过措辞，两处一起改）
             support = "给开发者买杯咖啡吧",
-            leading = { IconCircle(R.drawable.ic_reward, IconTints.Amber) },
+            leading = { IconCircle(MsIcon.REWARD, IconTints.Accent) },
             trailing = { Chevron() },
             onClick = { onNavigate(SettingsPage.Reward) },
         )
     }
 }
 
-
-
-
-
-
-
-
+/**
+ * 打赏页：一张 MD3E 圆角卡里放赞赏码。
+ *
+ * ★ 两张码按**深浅色**换（用户给的两张图就是照这个做的：深色底那张给深色模式用）：
+ *   判据直接取主题自己的 [useDarkTheme]（"跟随系统/浅色/深色"三态都收敛在它里面），
+ *   不要另写 `isSystemInDarkTheme()` —— 那样用户在设置里手动选"深色"时会拿错图。
+ */
 @Composable
 private fun RewardPage() {
     val dark = useDarkTheme()
@@ -475,13 +477,14 @@ private fun RewardPage() {
                             if (dark) R.drawable.reward_qr_dark else R.drawable.reward_qr_light
                         ),
                         contentDescription = "赞赏码",
-                        
-                        
-                        
-                        
+                        // ★ 内层圆角要和外框**同心**（用户反馈"内层图片的 r 角该和外框一致"）：
+                        //   外框 CardCorner（32dp）、图片四周内缩 16dp，
+                        //   所以内层半径 = CardCorner − 16 = 16dp。
+                        //   两边都写同一个值时圆弧走向对不上，看着就是"内框比外框圆" ——
+                        //   同一条规矩见悬浮面板的高亮行（FloatingNav 的注释）。
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp)),
+                            .clip(RoundedCornerShape(CardCorner - 16.dp)),
                         contentScale = ContentScale.FillWidth,
                     )
                     Text(
@@ -495,7 +498,7 @@ private fun RewardPage() {
     }
 }
 
-
+/** 调色盘上的一颗色点：选中时套一圈描边，比只做粗边更好认。 */
 @Composable
 private fun SeedSwatch(color: Color, selected: Boolean, onClick: () -> Unit) {
     Box(
@@ -517,12 +520,12 @@ private fun SeedSwatch(color: Color, selected: Boolean, onClick: () -> Unit) {
 
 private val SeedNames = listOf("蓝", "紫", "绿", "琥珀")
 
-
-
-
-
-
-
+/**
+ * 已配对相机的展示名：**相机型号 + SN**（用户定版）。
+ *
+ * 型号/SN 来自配对成功后立刻拉取的 `OP_DEVICE_INFO`；万一那次拉取失败，
+ * 这里逐级回退到友好名、最后才是设备码 —— 总之不显示空白行。
+ */
 private fun labelOf(cam: PairingStore.PairedCamera): String {
     val model = cam.peerModel.ifBlank { cam.peerName }
     if (model.isBlank()) return cam.peerDeviceId

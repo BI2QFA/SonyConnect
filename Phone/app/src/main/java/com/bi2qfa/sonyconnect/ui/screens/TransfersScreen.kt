@@ -61,18 +61,20 @@ import com.bi2qfa.sonyconnect.ui.components.IconCircle
 import com.bi2qfa.sonyconnect.ui.components.RowIconAction
 import com.bi2qfa.sonyconnect.ui.theme.IconTints
 import com.bi2qfa.sonyconnect.ui.theme.Motion
+import com.bi2qfa.sonyconnect.ui.components.MsIcon
+import androidx.compose.foundation.interaction.MutableInteractionSource
 
-
-
-
-
-
-
-
-
-
-
-
+/**
+ * 传输页：每项文件一张卡片、独立进度条与状态；
+ * FAB 统一开始 / 停止（停止=整批暂停，进度保留可续传）。
+ * FAB 状态跟随 TransferStore.batchRunning（响应式——修"停止后按钮不回弹"）。
+ * 点已完成项 → 系统选择器打开文件；右上倒三角菜单：删除已完成 / 删除所有任务
+ * （红色，带确认弹窗；只删任务记录，绝不动已下载的文件）。
+ *
+ * MD3E 版式：段落小标题 + 设备副标题（右上角放任务菜单）→ 每项任务一张 28dp 卡片。
+ * 一项一张卡（而不是原来的一行行排在一个列表里）是因为**每项自带进度条**：
+ * 卡片把"文件名 / 状态 / 进度 / 字节数"框成一件独立的事，一屏十项也不会串行。
+ */
 @Composable
 fun TransfersScreen() {
     val context = LocalContext.current
@@ -88,8 +90,8 @@ fun TransfersScreen() {
 
     fun openFile(item: TransferItem) {
         val path = item.path
-        
-        
+        // 与下载落盘走同一个路径函数：两边各算一次迟早会不一致，
+        // 表现是"显示已完成、点开却说文件不存在"
         val rel = StorageSink.localRelPath(item.deviceDir, path)
         val uri = StorageSink.openUriOrNull(context, SettingsRepo.downloadTreeUri, rel)
         if (uri == null) {
@@ -112,12 +114,12 @@ fun TransfersScreen() {
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
-            
-            
-            
-            
-            
-            
+            // ★ 设备那一行**整行删掉**（用户定版）：设备码（"e0fa60c4"）是"只用在后端做
+            //   队列隔离"的东西，前端不展示。队列按设备隔离仍然是后端的事
+            //   （TransferStore 按设备码分桶），界面只需要回答"这些任务怎么样了"。
+            // ★ 倒三角因此从"独占一行"并入**筛选芯片那一行**（用户反馈：设备行删掉之后
+            //   那颗倒三角独自浮在上面、位置偏高，下面的内容还得往下让）。现在是这一行的
+            //   行尾动作，与芯片垂直居中对齐，上面那段空行也就不存在了。
             Row(
                 Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp, top = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -130,22 +132,32 @@ fun TransfersScreen() {
                     StatChip("完成", TransferStore.countBy(TransferState.DONE))
                     StatChip("失败", TransferStore.countBy(TransferState.FAILED))
                 }
-                
+                // 倒三角展开菜单（用户定版：替换原"清除已完成"按钮）
                 Box {
-                    IconButton(onClick = { menuOpen = true }) {
-                        Icon(painterResource(R.drawable.ic_drop), contentDescription = "任务菜单")
+                    val menuSource = remember { MutableInteractionSource() }
+                    IconButton(
+                        onClick = { menuOpen = true },
+                        interactionSource = menuSource,
+                    ) {
+                        MsIcon(
+                            // 倒三角（arrow_drop_down）：菜单展开的通用记号。原来的
+                            // water_drop 是水滴，谁也看不出它是"菜单"（用户定版换掉）
+                            icon = MsIcon.MENU_DROP,
+                            contentDescription = "任务菜单",
+                            interactionSource = menuSource,
+                        )
                     }
                     DropdownMenu(
                         expanded = menuOpen,
                         onDismissRequest = { menuOpen = false },
-                        
-                        
-                        
-                        
-                        
-                        
-                        
-                        
+                        // ★ MD3E 的菜单观感在这两个令牌上（用户反馈"展开面板没适配 MD3E"）：
+                        //   形状取 MenuDefaults.shape（大圆角）、容器取 MenuDefaults.containerColor
+                        //   （surfaceContainer 那一档）。原来这里写死
+                        //   containerColor = surfaceContainerHigh —— 比 MD3E 的容器亮一档，
+                        //   圆角也没给，于是这块面板看着像个方盒子。
+                        //   ⚠ MenuDefaults 的 tonalElevation / shadowElevation 在 Kotlin 侧
+                        //   取不到（编译期 Unresolved reference），而 DropdownMenu 的默认值
+                        //   本来就走那两个 —— 不必也不该显式传。
                         shape = MenuDefaults.shape,
                         containerColor = MenuDefaults.containerColor,
                     ) {
@@ -176,9 +188,9 @@ fun TransfersScreen() {
                 HintText("还没有传输任务：在文件页长按选中文件后点「开始传输」", center = false)
             }
 
-            
-            
-            
+            // ★ 「几个小块拼成一个大块」（用户定版，照已配对相机那一页的样子）：
+            //   段与段之间留库自带的分段缝，每段的圆角由它在组里的位置决定，
+            //   拼起来是**一整块被切开的卡**（原来是一项一张独立卡片，一行一个圆角块）。
             LazyColumn(
                 Modifier.fillMaxSize(),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(
@@ -192,14 +204,14 @@ fun TransfersScreen() {
                 val count = items.size
                 itemsIndexed(items, key = { _, it -> it.id }) { index, item ->
                     val done = item.state == TransferState.DONE
-                    
-                    
+                    // 复用设置页那一段（[Segment]）：同一种"组里的一段"，
+                    // 形状/底色/水波纹裁剪都由它统一保证，"几小块拼一大块"才拼得齐
                     Segment(
                         index = index,
                         count = count,
-                        
+                        // 已完成项点击 → 系统选择器打开（用户定版）
                         onClick = if (done) ({ openFile(item) }) else null,
-                        
+                        // 增删与挪位走弹簧：删掉一项时下面的段是"滑上来"而不是"跳上来"
                         modifier = Modifier.animateItem(
                             placementSpec = Motion.spatialDefault(),
                             fadeInSpec = Motion.effectsDefault(),
@@ -210,14 +222,14 @@ fun TransfersScreen() {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconCircle(
                                     when (item.state) {
-                                        TransferState.DONE -> R.drawable.ic_check
-                                        TransferState.FAILED -> R.drawable.ic_info
-                                        else -> R.drawable.ic_thumb_download
+                                        TransferState.DONE -> MsIcon.CHECK
+                                        TransferState.FAILED -> MsIcon.INFO
+                                        else -> MsIcon.THUMB_DOWNLOAD
                                     },
                                     when (item.state) {
-                                        TransferState.DONE -> IconTints.Green
-                                        TransferState.FAILED -> IconTints.Pink
-                                        else -> IconTints.Purple
+                                        TransferState.DONE -> IconTints.Accent
+                                        TransferState.FAILED -> IconTints.Error
+                                        else -> IconTints.Accent
                                     },
                                 )
                                 Spacer(Modifier.width(16.dp))
@@ -228,11 +240,11 @@ fun TransfersScreen() {
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
-                                    
-                                    
-                                    
-                                    
-                                    
+                                    // 已完成不再写状态字（用户定版："已完成 · 点此打开"整句删掉）。
+                                    // 那一行是多余的：左边绿底对号 + 进度条已经满格，都说明传完了；
+                                    // "点此打开"也早就是点击即打开，不需要再教。
+                                    // ★ 这一行给已完成项写**源文件的修改时间**（用户要求：传完的
+                                    //   文件在文件名下方要有修改时间）；还没传完的项仍写状态字。
                                     val label = stateLabel(item)
                                     val sub = if (label.isNotBlank()) label
                                     else if (item.mtime > 0) formatMtime(item.mtime) else ""
@@ -253,7 +265,7 @@ fun TransfersScreen() {
                                 }
                                 if (item.state != TransferState.RUNNING) {
                                     RowIconAction(
-                                        R.drawable.ic_trash,
+                                        MsIcon.TRASH,
                                         "删除任务",
                                         onClick = { TransferStore.remove(item) },
                                     )
@@ -283,8 +295,8 @@ fun TransfersScreen() {
             }
         }
 
-        
-        
+        // 列表为空、或全部任务都已结束时隐藏 FAB（用户定版）。
+        // 出现/消失走弹簧（缩放 + 淡变）—— 同文件页那颗 FAB 的处理。
         AnimatedVisibility(
             visible = items.any { it.state != TransferState.DONE },
             modifier = Modifier.align(Alignment.BottomEnd),
@@ -302,7 +314,7 @@ fun TransfersScreen() {
                     if (running) {
                         DownloadService.stopCurrent(context)
                     } else if (ConnectionCenter.state != ConnectionCenter.State.CONNECTED) {
-                        
+                        // 没连相机就点"开始传输"：说清楚并按兵不动（服务端也有一道同样的闸）
                         android.widget.Toast.makeText(
                             context, "相机未连接，无法开始传输", android.widget.Toast.LENGTH_SHORT,
                         ).show()
@@ -317,13 +329,18 @@ fun TransfersScreen() {
                 },
                 modifier = Modifier
                     .padding(20.dp)
-                    
-                    
+                    // 悬浮导航盖在内容上，且右上角的圆形按钮就在右下角这一带：
+                    // 不留余地的话 FAB 会被它压住（实测只剩"始…(1)"露在外面）
                     .padding(bottom = FloatingNavInset),
             ) {
-                Icon(
-                    painterResource(if (running) R.drawable.ic_stop else R.drawable.ic_start),
+                MsIcon(
+                    icon = if (running) MsIcon.STOP else MsIcon.START,
                     contentDescription = null,
+                    // ★ 不传 interactionSource：`ExtendedFloatingActionButton` 拿不到
+                    //   它的交互源（API 上没有这个参数）。让图标自己检测按下 ——
+                    //   它在这个 FAB 里只是图形，点击仍归 FAB，不冲突。
+                    animated = true,
+                    interactionSource = null,
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(if (running) "停止传输" else "开始传输")
@@ -340,8 +357,8 @@ fun TransfersScreen() {
                     TextButton(onClick = {
                         confirmClearAll = false
                         TransferStore.clearAll()
-                        
-                        
+                        // 下载中删除全部任务：立刻停掉当前传输（用户定版：
+                        // 任务全没了传输就该结束，而不是空转到当前文件下完）
                         DownloadService.stopCurrent(context)
                     }) {
                         Text("删除", color = MaterialTheme.colorScheme.error)
@@ -355,7 +372,7 @@ fun TransfersScreen() {
     }
 }
 
-
+/** 队列计数的小药丸（等待 / 完成 / 失败）。 */
 @Composable
 private fun StatChip(label: String, count: Int) {    androidx.compose.material3.Surface(
         shape = androidx.compose.foundation.shape.CircleShape,
@@ -376,10 +393,10 @@ private fun StatChip(label: String, count: Int) {    androidx.compose.material3.
     }
 }
 
-
-
-
-
+/**
+ * 状态行文案。**已完成返回空串 = 不显示那一行**（用户定版："已完成 · 点此打开"整句删掉）。
+ * 左边那枚绿底对号 + 满格进度条已经把"传完了"说清楚，不需要再写一遍。
+ */
 private fun stateLabel(item: TransferItem): String = when (item.state) {
     TransferState.QUEUED -> "等待传输"
     TransferState.RUNNING -> "传输中"
@@ -387,7 +404,7 @@ private fun stateLabel(item: TransferItem): String = when (item.state) {
     TransferState.FAILED -> "失败（开始传输时自动续传）"
 }
 
-
+/** 源文件修改时间（`FTP LIST` 解析得到）；0 或非法值返回空串，界面就不显示这一行 */
 private fun formatMtime(ms: Long): String {
     if (ms <= 0) return ""
     return java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())

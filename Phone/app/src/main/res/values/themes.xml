@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    
-
-
-
-
+    <!--
+      窗口底 = **深色**（与应用默认深浅色一致，见 theme/SonyConnectTheme.kt）：
+      Compose 首帧之前那一瞬间显示的是窗口背景，用浅色会在深色界面前闪一下白。
+      应用改成浅色时这一闪是同一枚硬币的另一面，代价可接受。
+    -->
     <style name="Theme.SonyConnect" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/window_dark</item>
         <item name="android:statusBarColor">@android:color/transparent</item>

@@ -12,10 +12,10 @@ import androidx.core.app.NotificationCompat
 import com.bi2qfa.sonyconnect.R
 import com.bi2qfa.sonyconnect.data.DeviceStore
 
-
-
-
-
+/**
+ * 连接保活前台服务（修复：切后台后 MIUI 冻结/限网导致心跳失联断开）。
+ * 连接成功时启动、断开时停止；通知常驻低优先级，不带进度不吵人。
+ */
 class ConnectionService : Service() {
 
     companion object {
@@ -70,7 +70,7 @@ class ConnectionService : Service() {
             .build()
     }
 
-    
+    /** 点击通知直接进入软件 */
     private fun mainActivityIntent() = android.app.PendingIntent.getActivity(
         this, 0,
         Intent(this, com.bi2qfa.sonyconnect.ui.MainActivity::class.java),

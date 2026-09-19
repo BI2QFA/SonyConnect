@@ -35,3 +35,7 @@ __pycache__/
 Camera/tools/ui/diag/
 Camera/portcheck/build_out/
 Camera/desktop-test/apkcheck/
+
+# 签名密钥不入库
+*.keystore
+*.jks

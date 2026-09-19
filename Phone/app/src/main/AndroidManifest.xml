@@ -5,15 +5,16 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    
+    <!-- 无定位权限：扫描用子网探测，不读 SSID；扫码功能已移除，无相机权限 -->
 
-    
-
-
-
+    <!-- 预测性返回：opt-in。开了之后系统退到"按返回键那一刻就能预览上一个界面"。
+         本应用的返回全走 Compose 的 BackHandler（activity-compose 1.13 会把它们注册到
+         OnBackInvokedDispatcher），所以开它是纯增益；万一某台设备上返回行为异常，
+         删掉 enableOnBackInvokedCallback 这一行就能回到老路径。 -->
     <application
         android:name=".SonyConnectApp"
         android:allowBackup="true"
@@ -27,6 +28,7 @@
             android:name=".ui.MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -39,13 +41,13 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        
+        <!-- 连接保活：连接期间常驻前台，防 MIUI 后台冻结/限网导致断连 -->
         <service
             android:name=".core.ConnectionService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        
+        <!-- 传输页点开已完成文件（应用目录通道走 FileProvider） -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="com.bi2qfa.sonyconnect.files"

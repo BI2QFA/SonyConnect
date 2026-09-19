@@ -4,27 +4,27 @@ import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 
-
-
-
-
-
-
+/**
+ * PTP/IP（CIPA DC-X005）线格式编解码 —— **相机端 `PtpCodec.java` 的逐函数镜像**。
+ *
+ * 凡相机端有的常量与构造/解析函数，这里都有，且字节布局完全一致。
+ * 所有多字节整数一律**小端（LE）**。
+ */
 object PtpCodec {
 
-    
+    // ===== 通用包头 =====
     const val HEADER_LEN = 8
 
-    
+    /** 单包上限（控制面 1 MiB 足够）。 */
     const val MAX_PACKET = 1024 * 1024
 
-    
-
-
-
+    /**
+     * 数据通道分块大小（128 KiB）—— 与相机端 `PtpCodec.CHUNK` 同值。
+     * 接收侧其实由帧长自带、不依赖这个数，留着只为两端对照时一眼可见。
+     */
     const val CHUNK = 128 * 1024
 
-    
+    // ===== 包类型（标准区 0x01–0x0E）=====
     const val T_INIT_CMD_REQ = 0x0001
     const val T_INIT_CMD_ACK = 0x0002
     const val T_INIT_EVENT_REQ = 0x0003
@@ -40,29 +40,29 @@ object PtpCodec {
     const val T_PROBE_REQ = 0x000D
     const val T_PROBE_RESP = 0x000E
 
-    
+    // ===== 厂商扩展包类型（0x40+）=====
     const val T_DATA_OPEN = 0x0040
     const val T_DATA_OPEN_ACK = 0x0041
 
-    
+    // ===== 数据阶段标记 =====
     const val DP_NONE = 0
     const val DP_DATA_IN = 1
     const val DP_DATA_OUT = 2
 
-    
+    // ===== Init Fail 原因 =====
     const val FAIL_REJECTED = 0x01
     const val FAIL_UNSUPPORTED = 0x02
     const val FAIL_BUSY = 0x03
-    
+    /** 本机未与对方配对（原 FAIL_CRYPTO_REQUIRED；加密层已移除，语义改为"先配对"）。 */
     const val FAIL_NOT_PAIRED = 0x04
 
-    
+    // ===== 厂商操作码（0x9000–0x9FFF）=====
     const val OP_PAIR_BEGIN = 0x9001
     const val OP_PAIR_EXCHANGE = 0x9002
     const val OP_PAIR_ABORT = 0x9004
-    
+    /** 已认证会话内请求相机删掉本机那条配对记录（手机端「解除配对」）。 */
     const val OP_PAIR_REMOVE = 0x9005
-    
+    // 0x9010 / 0x9011 原为双向认证的两个操作码；加密层整体移除后不再使用，号段留空。
     const val OP_PING = 0x9012
     const val OP_DEVICE_INFO = 0x9013
     const val OP_LIST_DIR = 0x9020
@@ -72,43 +72,66 @@ object PtpCodec {
     const val OP_THUMB_QUEUE_PAUSE = 0x9024
     const val OP_THUMB_QUEUE_RESUME = 0x9025
     const val OP_THUMB_QUEUE_CANCEL = 0x9026
-    
-    
-    
+    // 0x9030 原为 OP_EXIT_APP（手机请相机端退出，用于"传输完成后自动关闭相机端"）。
+    // 该功能已按用户要求**两端一起彻底删除**，号段留空不再使用。
+    // 相机端的退出只剩**手动**一条路（相机自己选项菜单里的「退出应用程序」）。
 
-    
+    // ===== 厂商事件码 =====
     const val EV_THUMB_PROGRESS = 0x9041
 
-    
-
-
-
-
-
+    /**
+     * 相机已解除本机的配对（相机端在配对页删掉了这台手机）。
+     *
+     * 相机 → 手机的单向通知：收到就清本地配对记录并断开当前会话，否则本机还留着
+     * 一个相机已不认的旧记录（下次连接会被 `Init Fail(NOT_PAIRED)` 挡回来）。
+     */
     const val EV_PAIRED_REMOVED = 0x9042
 
-    
-
-
-
-
-
-
-
-
+    /**
+     * 相机端正在退出（退出软件 / 被会话强收）—— 收到即断开当前会话。
+     *
+     * 相机在拆连接**之前**发这条，所以手机端能立刻显示"相机端已退出"；
+     * 少了它就只能等 3 次心跳失联（约 9 秒）才自己发现，界面一直显示"已连接"。
+     *
+     * ★ **切换连接方式不走这条**：那条路是 [EV_MODE_SWITCHING]。相机端切换时会抑制
+     *   这条（切换前先发方式通知），否则本机显示"相机端已退出"就是句假话。
+     */
     const val EV_APP_EXITING = 0x9043
 
-    
-
-
-
-
-
-
-
+    /**
+     * 相机端正在**切换连接方式**（相机 → 手机的单向通知）。
+     *
+     * 参数 `params[0]`：0 = Wi-Fi 网络（接入点），1 = 相机热点。
+     *
+     * 切换要重配无线电 → 本机这条链路**一定会断**，处理上与 [EV_APP_EXITING] 一样是
+     * 收掉会话；差别只在给用户的那句话：不是"相机退出了"，而是"相机换了连接方式"。
+     */
     const val EV_MODE_SWITCHING = 0x9044
 
-    
+    /**
+     * 相机端**主动断开本机连接**的通用声明（相机 → 手机单向通知）。
+     *
+     * 参数 `params[0]`：断开原因，见 [DISC_REASON_PAIRING] 等。
+     *
+     * ★ 用户定版："相机端协议应针对所有相机端主动断连的行为做出声明，在手机端显示；
+     *   如果属于意外断连（也就是**没收到任何声明**），则统一按失去与相机的连接处理。"
+     *
+     * 与另外三条的关系：[EV_APP_EXITING]（退出）、[EV_MODE_SWITCHING]（切换方式）、
+     * [EV_PAIRED_REMOVED]（解除配对）各自表达更具体的语义、继续保留；本条补的是
+     * 它们**没覆盖到**的原因（进配对模式、服务异常…）。收齐四条任一都算"有交代"。
+     */
+    const val EV_DISCONNECTING = 0x9045
+
+    /** [EV_DISCONNECTING] 原因：相机端要进配对模式，腾出连接给新手机。 */
+    const val DISC_REASON_PAIRING = 0
+
+    /** [EV_DISCONNECTING] 原因：相机端服务异常，无法继续提供服务。 */
+    const val DISC_REASON_ERROR = 1
+
+    /** [EV_DISCONNECTING] 原因：其它（未细分的主动断开情形）。 */
+    const val DISC_REASON_OTHER = 2
+
+    // ===== 响应码 =====
     const val RC_OK = 0x2001
     const val RC_GENERAL_ERROR = 0x2002
     const val RC_SESSION_NOT_OPEN = 0x2003
@@ -120,17 +143,17 @@ object PtpCodec {
     const val RC_PAIRING_FAILED = 0x2009
     const val RC_CANCELED = 0x200B
 
-    
+    /** GET_OBJECT 的 kind 参数。 */
     const val KIND_THUMB = 0
     const val KIND_PREVIEW = 1
     const val KIND_ORIGINAL = 2
 
-    
+    /** 厂商友好名标记。 */
     const val VENDOR_TAG = "SonyConnect/2.0"
 
-    
-    
-    
+    // ============================================================
+    // 基础字节读写（小端）
+    // ============================================================
 
     fun u8(b: ByteArray, off: Int): Int = b[off].toInt() and 0xFF
 
@@ -166,9 +189,9 @@ object PtpCodec {
         put32(b, off + 4, ((v ushr 32) and 0xFFFFFFFFL).toInt())
     }
 
-    
-    
-    
+    // ============================================================
+    // 组帧 / 解帧
+    // ============================================================
 
     fun header(type: Int, payloadLen: Int): ByteArray {
         val h = ByteArray(HEADER_LEN)
@@ -186,25 +209,25 @@ object PtpCodec {
         return out
     }
 
-    
+    /** 一个已解析的 PTP/IP 包。 */
     class Msg(val type: Int, val body: ByteArray)
 
-    
-
-
-
-
-
-
-
-
-
+    /**
+     * 从流里读一个完整包。
+     *
+     * ⚠ **不要给它加"复用缓冲"参数**：全工程（本文件、[PtpIpClient]、[DataChannel]）
+     * 都拿 `Msg.body.size` 当"这一帧带了多少数据"的权威判据。复用一块固定大小的缓冲后
+     * `body.size` 会恒等于缓冲大小，判据立刻失真 —— 曾经这么改过一次，后果是
+     * "进度跑满又归零、循环往复最后失败" + "缩略图/预览图出现坏块"。见 DataChannel 里的长注释。
+     *
+     * @return null 表示对端干净关闭；截断 / 坏长度抛 [IOException]
+     */
     @Throws(IOException::class)
     fun read(input: InputStream): Msg? {
         val h = ByteArray(HEADER_LEN)
-        
-        
-        
+        // 包头一次性读完，不再先单字节 read() 探 EOF：数据通道是 128 KiB 一块的
+        // 大帧，每帧多一次单字节系统调用在这个量级上就是白付的开销。
+        // 干净关闭由"首个 read 就返回 0 字节"识别。
         if (readHeader(input, h) == 0) return null
 
         val len = i32(h, 0)
@@ -217,10 +240,10 @@ object PtpCodec {
         return Msg(type, body)
     }
 
-    
-
-
-
+    /**
+     * 读满包头。
+     * @return 实际读到的字节数：0 = 对端干净关闭；1..7 = 截断，抛 [IOException]
+     */
     @Throws(IOException::class)
     private fun readHeader(input: InputStream, h: ByteArray): Int {
         var got = 0
@@ -245,9 +268,9 @@ object PtpCodec {
         }
     }
 
-    
-    
-    
+    // ============================================================
+    // FriendlyName：1 字节字符数 + UTF-16LE
+    // ============================================================
 
     fun nameLen(s: String): Int = 1 + s.length * 2
 
@@ -262,7 +285,7 @@ object PtpCodec {
         return 1 + chars * 2
     }
 
-    
+    /** 读 name；nextOff[0] 回写下一偏移。 */
     fun readName(b: ByteArray, off: Int, nextOff: IntArray?): String {
         val chars = u8(b, off)
         val sb = StringBuilder(chars)
@@ -275,9 +298,9 @@ object PtpCodec {
         return sb.toString()
     }
 
-    
-    
-    
+    // ============================================================
+    // 各类包构造器
+    // ============================================================
 
     fun initCmdReq(guid: ByteArray, friendlyName: String, protoVer: Int): ByteArray {
         val nl = nameLen(friendlyName)
@@ -328,7 +351,7 @@ object PtpCodec {
         return p
     }
 
-    
+    /** 操作请求 / 应答的公共解析结果。 */
     class Op {
         var dataPhase = 0
         var code = 0
@@ -349,22 +372,22 @@ object PtpCodec {
         return o
     }
 
-    
-
-
+    /**
+     * 扩展 Operation Request（内联 blob，paramCount 恒 0）—— 认证 nonce / 路径类请求。
+     */
     fun opReqBlob(opCode: Int, txId: Int, blob: ByteArray?): ByteArray =
         opReqBlobParams(opCode, txId, null, blob)
 
-    
-
-
-
-
-
-
-
-
-
+    /**
+     * 扩展 Operation Request 通用形式：**参数区 + 内联 blob**（[opRspBlob] 的请求侧镜像）。
+     *
+     * ```
+     * dataPhase(4)=DP_DATA_IN | opCode(2) | txId(4) | paramCount(4) | params(4×n) | blobLen(4) | blob
+     * ```
+     *
+     * ★ 必须整体用 [parseOpBlob] 解析，**不可**与 [parseOp] 混用：
+     * 两者参数区偏移相差 4 字节。用途：`GET_OBJECT`（数值参数 + 路径 blob）。
+     */
     fun opReqBlobParams(opCode: Int, txId: Int, params: IntArray?, blob: ByteArray?): ByteArray {
         val n = params?.size ?: 0
         val bl = blob?.size ?: 0
@@ -380,13 +403,13 @@ object PtpCodec {
         return frame(T_OPERATION_REQ, p)
     }
 
-    
-
-
-
-
-
-
+    /**
+     * 扩展 Operation Response（内联 blob）。
+     *
+     * ```
+     * dataPhase(4)=DP_DATA_IN | code(2) | txId(4) | paramCount(4) | params(4×n) | blobLen(4) | blob
+     * ```
+     */
     fun opRspBlob(respCode: Int, txId: Int, params: IntArray?, blob: ByteArray?): ByteArray {
         val n = params?.size ?: 0
         val bl = blob?.size ?: 0
@@ -402,13 +425,13 @@ object PtpCodec {
         return frame(T_OPERATION_RSP, p)
     }
 
-    
+    /** 扩展响应体解析结果。 */
     class OpBlob {
         var dataPhase = 0
         var code = 0
         var txId = 0
         var params: IntArray = IntArray(0)
-        
+        /** 无 blob 时为空数组，不为 null */
         var blob: ByteArray = ByteArray(0)
     }
 
@@ -430,7 +453,7 @@ object PtpCodec {
         return o
     }
 
-    
+    /** Event：EventCode(2) + TransactionID(4) + Params(4×n)。 */
     fun event(evCode: Int, txId: Int, params: IntArray?): ByteArray {
         val n = params?.size ?: 0
         val p = ByteArray(6 + n * 4)
@@ -458,11 +481,11 @@ object PtpCodec {
         return e
     }
 
-    
-    
-    
+    // ============================================================
+    // 数据阶段
+    // ============================================================
 
-    
+    /** Start Data：TransactionID(4) + TotalDataLength(8)。 */
     fun startData(txId: Int, total: Long): ByteArray {
         val p = ByteArray(12)
         put32(p, 0, txId)
@@ -500,11 +523,11 @@ object PtpCodec {
         return i64(body, 4)
     }
 
-    
-    
-    
+    // ============================================================
+    // 厂商扩展：文件端口握手
+    // ============================================================
 
-    
+    /** DATA_OPEN：GUID(16) + ConnNo(4) + token(8)。 */
     fun dataOpen(guid: ByteArray, connNo: Int, token: Long): ByteArray {
         val p = ByteArray(28)
         System.arraycopy(guid, 0, p, 0, 16)
@@ -531,11 +554,11 @@ object PtpCodec {
         return d
     }
 
-    
-    
-    
+    // ============================================================
+    // UDP 发现
+    // ============================================================
 
-    
+    /** 探测包：GUID(16) + FriendlyName + 厂商扩展尾(8)。 */
     fun probe(
         request: Boolean,
         guid: ByteArray,
@@ -584,7 +607,7 @@ object PtpCodec {
         return pr
     }
 
-    
+    /** 紧凑探测包（无厂商扩展尾），对第三方标准客户端使用。 */
     fun probeCompact(request: Boolean, guid: ByteArray, friendlyName: String): ByteArray {
         val nl = nameLen(friendlyName)
         val p = ByteArray(16 + nl)
@@ -596,9 +619,9 @@ object PtpCodec {
     fun hasVendorTag(friendlyName: String?): Boolean =
         friendlyName != null && friendlyName.endsWith(VENDOR_TAG)
 
-    
-    
-    
+    // ============================================================
+    // 小工具
+    // ============================================================
 
     private const val HEX = "0123456789abcdef"
 
