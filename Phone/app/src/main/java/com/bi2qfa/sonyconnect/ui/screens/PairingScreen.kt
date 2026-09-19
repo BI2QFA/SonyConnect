@@ -16,7 +16,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -123,9 +122,9 @@ fun PairingScreen() {
                 //   而不是没反应。禁止态让用户在扫描中途换条件时只能干等。
                 leadingIcon = {
                     if (scanning) {
-                        // 等待态用 MD3E 的 LoadingIndicator（会变形的多边形），
-                        // 与主界面连接中那处一致
-                        LoadingIndicator(Modifier.size(22.dp))
+                        // 等待态用**旋转的进度圈**（用户定版：M3E 的 LoadingIndicator
+                        // 是变形多边形，看不出在转）——这里要的是一眼可辨的"转着呢"
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.5.dp)
                     } else {
                         MsIcon(
                             icon = MsIcon.REFRESH,

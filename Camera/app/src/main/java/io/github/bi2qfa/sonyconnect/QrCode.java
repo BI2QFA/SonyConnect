@@ -1,4 +1,4 @@
-package com.bi2qfa.sonyconnect;
+package io.github.bi2qfa.sonyconnect;
 
 /**
  * 自包含的极简 QR Code 生成器（无第三方依赖）。

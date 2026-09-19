@@ -5,7 +5,7 @@ android {
     buildToolsVersion '26.0.2'
 
     defaultConfig {
-        applicationId "com.bi2qfa.sonyconnect"
+        applicationId "io.github.bi2qfa.sonyconnect"
         minSdkVersion 10
         targetSdkVersion 10
         versionCode 1

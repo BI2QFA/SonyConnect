@@ -12,7 +12,9 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.bi2qfa.sonyconnect"
+        // ★ 发布包名（GitHub 组织命名）：与代码包 namespace 分离是 AGP 的标准做法，
+        //   全部源码的 package 声明无需跟着动。安装器身份以它为准。
+        applicationId = "io.github.bi2qfa.sonyconnect"
         minSdk = 31          // Android 12（需求指定）
         targetSdk = 36
         // 2.5 线按全新安装发布：两端统一 versionCode=1。

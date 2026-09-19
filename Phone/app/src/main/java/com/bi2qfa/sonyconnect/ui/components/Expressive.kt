@@ -415,6 +415,8 @@ fun SettingsRow(
     index: Int = 0,
     count: Int = 1,
     support: String? = null,
+    /** 标题最多几行：默认 1 行；型号/镜头名这类可能很长的读数行放开换行（用户定版：长镜头名换行而不是省略）。 */
+    titleMaxLines: Int = 1,
     supportColor: Color? = null,
     /** 说明行最多几行（读数行传 1：圆片与文字要共中线，见 [IconCircle] 的注释）。 */
     supportMaxLines: Int = 3,
@@ -440,10 +442,10 @@ fun SettingsRow(
             Text(
                 title,
                 style = MaterialTheme.typography.titleMedium,
-                // ★ 标题**只给一行**：行首有 44dp 圆片、行尾还有控件，文字列只有
-                //   一百多 dp 宽；不限制行数时一条长标题（型号+SN+设备码）就会撑成
-                //   三行，卡片一下变得又高又乱（装机实测）。
-                maxLines = 1,
+                // 默认**只给一行**（型号+SN+设备码这类长标题撑多行会把卡片撑乱，
+                // 装机实测）；可能很长的读数行（镜头名）由调用方放开 titleMaxLines，
+                // 长了**换行**而不是省略（用户定版）。
+                maxLines = titleMaxLines,
                 overflow = TextOverflow.Ellipsis,
             )
             if (support != null) {

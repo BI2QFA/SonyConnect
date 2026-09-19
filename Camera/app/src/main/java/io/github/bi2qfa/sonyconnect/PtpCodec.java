@@ -1,4 +1,4 @@
-package com.bi2qfa.sonyconnect;
+package io.github.bi2qfa.sonyconnect;
 
 import java.io.EOFException;
 import java.io.IOException;

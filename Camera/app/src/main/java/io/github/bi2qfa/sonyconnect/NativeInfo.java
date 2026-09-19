@@ -1,4 +1,4 @@
-package com.bi2qfa.sonyconnect;
+package io.github.bi2qfa.sonyconnect;
 
 /**
  * {@code libsonyinfo.so} 的 JNI 入口（索尼 Backup 存储直读）。

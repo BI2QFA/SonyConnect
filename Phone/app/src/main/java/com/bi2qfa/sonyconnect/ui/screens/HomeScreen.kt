@@ -187,6 +187,9 @@ fun HomeScreen(onOpenCameraDetail: () -> Unit) {
             SettingsRow(
                 index = 0, count = 1,
                 title = info?.lens?.takeIf { it.isNotBlank() } ?: "—",
+                // 镜头名可能很长（E PZ 16-50mm F3.5-5.6 OSS II）：长了**换行**显示，
+                // 不省略（用户定版）；圆片与文字块仍严格共中线
+                titleMaxLines = 3,
                 // 圆片底色统一走 [IconTints.Accent]（primaryFixed，当前色彩模式下的
                 // 浅强调色；用户定版"圆形图标背景统一取一个比较浅的色"）。图标用
                 // aperture 字形的 [MsIcon.LENS]：有光圈叶片，一眼是"镜头"。

@@ -1,4 +1,4 @@
-package com.bi2qfa.sonyconnect.radio;
+package io.github.bi2qfa.sonyconnect.radio;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;

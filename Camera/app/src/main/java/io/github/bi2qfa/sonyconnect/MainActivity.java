@@ -1,4 +1,4 @@
-package com.bi2qfa.sonyconnect;
+package io.github.bi2qfa.sonyconnect;
 
 import android.app.Activity;
 import android.app.DAConnectionManager;
@@ -34,8 +34,8 @@ import java.io.File;
 import java.io.IOException;
 import java.util.List;
 
-import com.bi2qfa.sonyconnect.radio.RadioWrapper;
-import com.bi2qfa.sonyconnect.radio.RadioWrapperFactory;
+import io.github.bi2qfa.sonyconnect.radio.RadioWrapper;
+import io.github.bi2qfa.sonyconnect.radio.RadioWrapperFactory;
 
 /**
  * SonyConnect 相机端主界面。
@@ -3316,7 +3316,7 @@ public class MainActivity extends Activity {
 
     static void killRadioQuietly(Context context) {
         try {
-            com.bi2qfa.sonyconnect.radio.RadioWrapperFactory.getInstance(context)
+            io.github.bi2qfa.sonyconnect.radio.RadioWrapperFactory.getInstance(context)
                     .issueDirectOff();
         } catch (Throwable t) {
         }

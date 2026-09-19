@@ -2,7 +2,7 @@
 <!-- 版本号只在 app/build.gradle 的 defaultConfig 里维护（Gradle 会覆盖此处的值，
      写在这里只会让读的人误判当前版本，所以刻意不写）。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.bi2qfa.sonyconnect" android:versionCode="1" android:versionName="2.5">
+    package="io.github.bi2qfa.sonyconnect" android:versionCode="1" android:versionName="2.5">
 
     <uses-sdk android:minSdkVersion="10" android:targetSdkVersion="10" />
 
