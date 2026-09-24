@@ -62,7 +62,10 @@ fun RemoteScreen(onClose: () -> Unit) {
     }
 
     LaunchedEffect(RecController.sessionActive) {
-        if (RecController.sessionActive) RecController.refresh()
+        while (RecController.sessionActive) {
+            RecController.refresh()
+            kotlinx.coroutines.delay(1000)
+        }
     }
 
     Box(
@@ -78,6 +81,15 @@ fun RemoteScreen(onClose: () -> Unit) {
                 modifier = Modifier
                     .fillMaxSize()
                     .clickable { RecController.dismissPostview() },
+            )
+            Text(
+                "点击画面关闭回看 · 原图已加入传输",
+                color = Color.White.copy(alpha = 0.8f),
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 48.dp),
             )
         } else if (preview != null) {
             Image(

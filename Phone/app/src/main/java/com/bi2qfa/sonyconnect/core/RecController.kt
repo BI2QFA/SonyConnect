@@ -7,6 +7,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.bi2qfa.sonyconnect.ptpip.LiveviewClient
 import com.bi2qfa.sonyconnect.ptpip.ObjectRepository
+import com.bi2qfa.sonyconnect.transfer.DownloadService
+import com.bi2qfa.sonyconnect.transfer.TransferItem
+import com.bi2qfa.sonyconnect.transfer.TransferStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -123,6 +126,7 @@ object RecController {
                 if (jpeg != null) {
                     postview = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
                 }
+                withContext(Dispatchers.IO) { enqueueOriginal(h, path) }
             }
             refresh()
         } catch (t: Throwable) {
@@ -200,6 +204,22 @@ object RecController {
         when (kind) {
             1 -> rec = rec.copy(focus = if (a == 1 || a == 2) "lock" else if (a == 3 || a == 4) "working" else "idle")
             4 -> rec = rec.copy(recording = a != 0, recSeconds = b)
+        }
+    }
+
+    private fun enqueueOriginal(host: String, path: String) {
+        runCatching {
+            val st = ObjectRepository.stat(host, path)
+            TransferStore.enqueue(
+                TransferItem(
+                    id = path,
+                    name = path.substringAfterLast('/'),
+                    path = path,
+                    size = st.size,
+                    mtime = st.mtime,
+                ),
+            )
+            ConnectionCenter.appContext()?.let { DownloadService.start(it) }
         }
     }
 

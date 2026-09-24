@@ -117,6 +117,8 @@ object ConnectionCenter {
     private lateinit var scope: CoroutineScope
     private var appContext: Context? = null
 
+    fun appContext(): Context? = appContext
+
     
 
 
