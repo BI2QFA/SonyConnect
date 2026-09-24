@@ -15,6 +15,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * PTP/IP 服务端（相机端）—— 双端口模型。
@@ -112,11 +115,21 @@ public class PtpIpServer {
              */
             int readInto(long offset, byte[] dst, int off, int length);
 
+            /** 对象总长度（2.6）：一次传输的长度一次问清，不再先调 objectSize 再开句柄。 */
+            long size();
+
             void close();
         }
 
         /** 对象大小；返回 -1 表示不存在。 */
         long objectSize(String path, int kind);
+
+        /**
+         * 存在性预检（2.6，**必须廉价**）：控制面发令牌前只问这一句。
+         * 历史坑：以前这里调 {@code objectSize} 判断"有没有"，而它对小图/预览要去
+         * 解析媒体文件 —— 控制线程被拖到 5 次/秒。现在只问文件系统。
+         */
+        boolean objectExists(String path, int kind);
 
         /** 对象最后修改时间（毫秒）；返回 -1 表示未知。续传前用它校验对象未变。 */
         long objectMtime(String path);
@@ -183,12 +196,6 @@ public class PtpIpServer {
          */
         void onUnpair(byte[] guid8);
     }
-
-    // ===== 配对阶段固定事务号（不占用会话事务空间） =====
-    static final int TX_PAIR_BEGIN = 0x41;
-    static final int TX_PAIR_EXCHANGE = 0x42;
-    /** 对端主动放弃本次配对（只在配对阶段有效）。 */
-    static final int TX_PAIR_ABORT = 0x44;
 
     /** ASCII 字面量 → 字节（避开 getBytes(charset) 的受检异常）。 */
     static byte[] ascii(String s) {
@@ -277,8 +284,16 @@ public class PtpIpServer {
     /** 文件端口从协议端口 +1 起递推的最大偏移。 */
     private static final int FILE_PORT_SPAN = 16;
 
-    /** 协议代次：P1–P4 内部仍报 1.0；P5 定稿时统一升 2.0。 */
-    public static final int PROTO_VERSION = (1 << 16);
+    /**
+     * **协议代次**（握手 Init Cmd Req/Ack 里那个 32 位版本字段）。
+     *
+     * 编码 = 主版本&lt;&lt;16 | 次版本&lt;&lt;8 | 修订号，于是 **2.6 = (2 &lt;&lt; 16) | (6 &lt;&lt; 8) | 0**。
+     *
+     * <p>★ 与手机端 {@code PtpIpClient.PROTO_VERSION} **必须同值**：两端都只把它记录下来
+     * + 打日志（不做准入校验，所以版本不同也能连上），但它表示"谁在跟谁说话"，
+     * 不一致会让人在排障时误判。
+     */
+    public static final int PROTO_VERSION = (2 << 16) | (6 << 8) | 0;
 
     /** 控制/事件连接空闲超时（毫秒）；手机端心跳 3s × 3 次失联判定，留足余量。 */
     private static final int CONTROL_IDLE_MS = 20000;
@@ -428,9 +443,6 @@ public class PtpIpServer {
         return filePort;
     }
 
-    public boolean isRunning() {
-        return running;
-    }
 
     // ============================================================
     // 启停
@@ -668,6 +680,11 @@ public class PtpIpServer {
         /** 请求字节数；-1 表示"从 offset 到对象尾"。 */
         int length;
         long expiresAt;
+        /**
+         * 批量取件清单（2.6）：每项 {@code "T\t<path>"} / {@code "P\t<path>"}；
+         * 非空即表示这是一张**批令牌**（数据连接上按序连续发），此时 path/kind 不用。
+         */
+        String[] batchItems;
     }
 
     /** 登记令牌 → 待发对象，返回令牌值。 */
@@ -682,6 +699,26 @@ public class PtpIpServer {
             p.kind = kind;
             p.offset = offset;
             p.length = length;
+            p.expiresAt = System.currentTimeMillis() + TOKEN_TTL_MS;
+            pending.put(Long.valueOf(t), p);
+        }
+        return t;
+    }
+
+    /**
+     * 登记**批令牌**（2.6）：一张令牌对应一整批（≤32 项）。
+     *
+     * <p>与单令牌同样"用后即废 + 绑设备 + 15s TTL"；区别只在数据连接上会被
+     * 展开成"连续多张"，见 {@code Conn.transferBatch}。
+     */
+    private long issueTokenBatch(byte[] deviceId, String[] items) {
+        long t;
+        synchronized (pending) {
+            pruneTokensLocked();
+            t = ++tokenCounter;
+            Pending p = new Pending();
+            p.deviceId = deviceId;
+            p.batchItems = items;
             p.expiresAt = System.currentTimeMillis() + TOKEN_TTL_MS;
             pending.put(Long.valueOf(t), p);
         }
@@ -863,7 +900,8 @@ public class PtpIpServer {
 
             byte[] guid8 = shortId(g);
             AppLog.i("Net", "Init Cmd Req：手机=" + name + " 设备码=" + PtpCodec.hex(guid8)
-                    + " 协议版本=" + pv);
+                    + " 协议版本=" + PtpCodec.formatProtoVersion(pv)
+                    + "（本机 " + PtpCodec.formatProtoVersion(PROTO_VERSION) + "）");
             PairingHandler ph = pairingHandler;
             // 走配对路径的条件：装了配对功能 且 这台手机尚未配对 且 配对窗口开着。
             // 三者缺一就落到下面的常规判定，从而在 ph == null 时行为与配对引入前一致。
@@ -1280,14 +1318,55 @@ public class PtpIpServer {
                         rspCode(tx, PtpCodec.RC_ACCESS_DENIED);
                         return true;
                     }
-                    long size = handler.objectSize(path, kind);
-                    if (size < 0 || off > size) {
+                    // ★ 预检只用廉价的 objectExists（控制线程上的解析会拖垮吞吐）；
+                    //   原图才补一次 objectSize 做越界判定（原图不解析，本来就是 stat）。
+                    if (!handler.objectExists(path, kind)) {
                         rspCode(tx, PtpCodec.RC_NOT_FOUND);
                         return true;
+                    }
+                    if (kind == PtpCodec.KIND_ORIGINAL) {
+                        long size = handler.objectSize(path, kind);
+                        if (size < 0 || off > size) {
+                            rspCode(tx, PtpCodec.RC_NOT_FOUND);
+                            return true;
+                        }
                     }
                     // 登记一次性令牌，并把**实得文件端口**一并回给手机（端口可能回退过）
                     long token = issueToken(deviceId, path, kind, off, len);
                     rspOk(tx, new int[]{(int) token, filePort});
+                    return true;
+                }
+                case PtpCodec.OP_GET_OBJECT_BATCH: {
+                    // 批量取件（2.6）：body 是纯文本 blob，每行 "T\t<path>" / "P\t<path>"。
+                    // 逐行校验路径（isPathSafe）后原样收进批令牌；上限 32 项（防单包过大）。
+                    String blob;
+                    try {
+                        blob = new String(PtpCodec.parseOpBlob(m.body).blob, "UTF-8");
+                    } catch (java.io.UnsupportedEncodingException e) {
+                        // UTF-8 是本平台必备编码，理论上不可达；真发生就当空清单处理
+                        blob = "";
+                    } catch (IOException e) {
+                        rspCode(tx, PtpCodec.RC_ACCESS_DENIED);
+                        return true;
+                    }
+                    List<String> items = new ArrayList<String>();
+                    String[] lines = blob.split("\n");
+                    for (int i = 0; i < lines.length && items.size() < 32; i++) {
+                        String line = lines[i].trim();
+                        if (line.length() < 3) continue;
+                        char k = line.charAt(0);
+                        if (k != 'T' && k != 'P') continue;
+                        String p0 = line.substring(2);
+                        if (!isPathSafe(p0)) continue;
+                        items.add((k == 'P' ? "P\t" : "T\t") + p0);
+                    }
+                    if (items.isEmpty()) {
+                        rspCode(tx, PtpCodec.RC_NOT_FOUND);
+                        return true;
+                    }
+                    long batchToken = issueTokenBatch(deviceId,
+                            items.toArray(new String[items.size()]));
+                    rspOk(tx, new int[]{(int) batchToken, filePort});
                     return true;
                 }
                 case PtpCodec.OP_PAIR_BEGIN:
@@ -1326,39 +1405,51 @@ public class PtpIpServer {
          */
         private void serveFile(PtpCodec.Msg first) throws IOException {
             AppLog.i("Net", "文件端口 DATA_OPEN（conn#" + id + "）");
-            PtpCodec.DataOpen d;
-            try {
-                d = PtpCodec.parseDataOpen(first.body);
-            } catch (IOException e) {
-                return;
-            }
-            deviceId = d.guid;
+            // ★ 2.6：**一条数据连接服务多次 DATA_OPEN**（批与批之间复用）。
+            //   以前每批都要重新 TCP 三握 + 重新握手应答，批量流式时这笔固定开销
+            //   占比很可观（每批 ~200ms 里能占掉几十 ms）。
+            //   recvQuiet 等下一张令牌；对端关连接时安静退出循环，不抛异常。
+            PtpCodec.Msg msg = first;
+            while (running && !closed && msg != null) {
+                PtpCodec.DataOpen d;
+                try {
+                    d = PtpCodec.parseDataOpen(msg.body);
+                } catch (IOException e) {
+                    return;
+                }
+                deviceId = d.guid;
 
-            Pending p = consumeToken(d.token);
-            if (p == null) {
-                AppLog.w("Net", "DATA_OPEN 令牌无效/过期 → 断开");
-                return;
-            }
-            if (!PtpCodec.eq(p.deviceId, deviceId)) {
-                return;
-            }
+                Pending p = consumeToken(d.token);
+                if (p == null) {
+                    AppLog.w("Net", "DATA_OPEN 令牌无效/过期 → 断开");
+                    return;
+                }
+                if (!PtpCodec.eq(p.deviceId, deviceId)) {
+                    return;
+                }
 
-            Conn owner = findControlByDevice(deviceId);
-            if (owner == null) {
-                AppLog.w("Net", "DATA_OPEN 找不到控制会话 → 断开");
-                return;
-            }
-            if (d.connNo != owner.connNo) {
-                AppLog.w("Net", "DATA_OPEN connNo 不匹配："
-                        + d.connNo + " != " + owner.connNo);
-                return;
-            }
-            connNo = d.connNo;
-            socket.setSoTimeout(DATA_IDLE_MS);
-            send(PtpCodec.dataOpenAck());
+                Conn owner = findControlByDevice(deviceId);
+                if (owner == null) {
+                    AppLog.w("Net", "DATA_OPEN 找不到控制会话 → 断开");
+                    return;
+                }
+                if (d.connNo != owner.connNo) {
+                    AppLog.w("Net", "DATA_OPEN connNo 不匹配："
+                            + d.connNo + " != " + owner.connNo);
+                    return;
+                }
+                connNo = d.connNo;
+                socket.setSoTimeout(DATA_IDLE_MS);
+                send(PtpCodec.dataOpenAck());
 
-            authorized = true;
-            transfer(p);
+                authorized = true;
+                if (p.batchItems != null) {
+                    transferBatch(p);
+                } else {
+                    transfer(p);
+                }
+                msg = recvQuiet();
+            }
         }
 
         /**
@@ -1373,21 +1464,30 @@ public class PtpIpServer {
         private void transfer(Pending p) throws IOException {
             AppLog.i("Net", "开始传输 " + p.path + " kind=" + p.kind
                     + " offset=" + p.offset + " len=" + p.length);
-            long total = handler.objectSize(p.path, p.kind);
-            if (total < 0) {
-                return;
-            }
-            long start = p.offset;
-            long end = (p.length < 0) ? total : Math.min(total, start + p.length);
-            long remaining = Math.max(0L, end - start);
-            int tx = 1;
-
+            // ★ 2.6：**先开句柄、总长从 reader.size() 取**，不再先调 objectSize。
+            //   并发（预取线程 + 传输线程）下同一张图只解析一次；objectSize 那条路
+            //   对小图/预览要去解析媒体文件，等于白解析一遍。
             Handler.ObjectReader reader = null;
             try {
                 reader = handler.openObject(p.path, p.kind);
             } catch (Throwable t) {
                 reader = null;
             }
+            long total = reader != null ? reader.size() : handler.objectSize(p.path, p.kind);
+            if (total < 0) {
+                if (reader != null) {
+                    try {
+                        reader.close();
+                    } catch (Throwable ignored) {
+                    }
+                }
+                return;
+            }
+            long start = p.offset;
+            long end = (p.length < 0) ? total : Math.min(total, start + p.length);
+            long remaining = Math.max(0L, end - start);
+            int tx = 1;
+            long beganAt = System.currentTimeMillis();
 
             long sent = 0;
             try {
@@ -1400,10 +1500,16 @@ public class PtpIpServer {
                 byte[] frame = new byte[PtpCodec.dataFrameCapacity()];
                 while (running && !closed && sent < remaining) {
                     int want = (int) Math.min((long) PtpCodec.CHUNK, remaining - sent);
-                    int got = readChunk(reader, p, start + sent, frame,
+                    int got = readChunk(reader, p.path, p.kind, start + sent, frame,
                             PtpCodec.DATA_PAYLOAD_OFFSET, want);
                     if (got <= 0) {
-                        // 读失败或已到对象尾：保留断点，手机端按实收长度走续传
+                        // 读失败或已到对象尾：保留断点，手机端按实收长度走续传。
+                        // ★ 收尾日志（含 KB/s）是当年逐轮调吞吐的唯一量化依据，格式别动。
+                        long ms = System.currentTimeMillis() - beganAt;
+                        if (ms > 0) {
+                            AppLog.i("Net", "传输完成 " + p.path + " kind=" + p.kind + " "
+                                    + sent + "B " + ms + "ms " + (((1000 * sent) / 1024) / ms) + "KB/s");
+                        }
                         return;
                     }
                     boolean last = sent + got >= remaining;
@@ -1417,6 +1523,11 @@ public class PtpIpServer {
                     // 零长度对象也要走一个完整 Start/End 对
                     send(PtpCodec.endData(tx, new byte[0]));
                 }
+                long ms = System.currentTimeMillis() - beganAt;
+                if (ms > 0) {
+                    AppLog.i("Net", "传输完成 " + p.path + " kind=" + p.kind + " "
+                            + sent + "B " + ms + "ms " + (((1000 * sent) / 1024) / ms) + "KB/s");
+                }
             } finally {
                 if (reader != null) {
                     try {
@@ -1429,18 +1540,159 @@ public class PtpIpServer {
         }
 
         /** 取一块数据：优先走句柄读进 {@code dst}，没有句柄才回退逐块 readObject。 */
-        private int readChunk(Handler.ObjectReader reader, Pending p, long offset,
+        private int readChunk(Handler.ObjectReader reader, String path, int kind, long offset,
                               byte[] dst, int dstOff, int want) {
             if (reader != null) {
                 return reader.readInto(offset, dst, dstOff, want);
             }
-            byte[] chunk = handler.readObject(p.path, p.kind, offset, want);
+            byte[] chunk = handler.readObject(path, kind, offset, want);
             if (chunk == null || chunk.length == 0) {
                 return 0;
             }
             int n = Math.min(chunk.length, want);
             System.arraycopy(chunk, 0, dst, dstOff, n);
             return n;
+        }
+
+        /**
+         * 批量传输（2.6）：一条连接上按序把整批发完，txId = 序号（1 起）。
+         *
+         * <p>**向前看解析**：另一条 daemon 线程（batch-parse）提前把下一张的句柄开好、
+         * 放进容量 1 的槽位；传输线程取一个发一个。这样"解析第 N+1 张"与"发送第 N 张"
+         * 重叠 —— 相机是单核，但解析是等 SD、发送是等网络，两者错开就能吃满链路。
+         *
+         * <p>任何退出路径（正常结束/中途断开/取消）都要：置 aborted → 打断解析线程 →
+         * join → **排干槽位里已经开好的句柄并逐个关闭**（否则 SD 句柄会攒着不放，
+         * 相机侧的表现是"退出后仍占着卡"）。
+         */
+        private void transferBatch(Pending p) throws IOException {
+            final String[] items = p.batchItems;
+            long beganAt = System.currentTimeMillis();
+            int okCount = 0;
+            final ArrayBlockingQueue<Object[]> slot =
+                    new ArrayBlockingQueue<Object[]>(1);
+            final AtomicBoolean aborted = new AtomicBoolean(false);
+            Thread parser = new Thread(new Runnable() {
+                public void run() {
+                    for (int i = 0; i < items.length && !aborted.get(); i++) {
+                        String line = items[i];
+                        int kind = line.charAt(0) == 'P' ? PtpCodec.KIND_PREVIEW : PtpCodec.KIND_THUMB;
+                        String path = line.substring(2);
+                        Handler.ObjectReader r;
+                        try {
+                            r = handler.openObject(path, kind);
+                        } catch (Throwable t) {
+                            r = null;
+                        }
+                        Object[] hand = new Object[]{r, path, Integer.valueOf(kind)};
+                        boolean delivered = false;
+                        while (!aborted.get()) {
+                            try {
+                                if (slot.offer(hand, 200, TimeUnit.MILLISECONDS)) {
+                                    delivered = true;
+                                    break;
+                                }
+                            } catch (InterruptedException e) {
+                                // 被 stop/interrupt：走下面统一收尾
+                                break;
+                            }
+                        }
+                        if (!delivered) {
+                            if (r != null) {
+                                try {
+                                    r.close();
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
+            }, "batch-parse");
+            parser.setDaemon(true);
+            parser.start();
+
+            try {
+                int i = 0;
+                while (i < items.length && running && !closed) {
+                    Object[] it;
+                    try {
+                        it = slot.take();
+                    } catch (InterruptedException e) {
+                        break;
+                    }
+                    Handler.ObjectReader reader = (Handler.ObjectReader) it[0];
+                    String path = (String) it[1];
+                    int kind = ((Integer) it[2]).intValue();
+                    int tx = i + 1;              // ★ txId = 序号，手机端按它对账
+                    long total = reader != null ? reader.size() : -1L;
+                    if (total < 0) {
+                        // 这张取不到（不存在/解析失败）：发一个空的 Start/End 占位，
+                        // 手机端据此记一次失败并继续下一张，整批不中断
+                        send(PtpCodec.startData(tx, 0L));
+                        send(PtpCodec.endData(tx, new byte[0]));
+                    } else {
+                        try {
+                            send(PtpCodec.startData(tx, total));
+                            byte[] frame = new byte[PtpCodec.dataFrameCapacity()];
+                            long sent = 0;
+                            while (running && !closed && sent < total) {
+                                int want = (int) Math.min((long) PtpCodec.CHUNK, total - sent);
+                                int got = readChunk(reader, path, kind, sent, frame,
+                                        PtpCodec.DATA_PAYLOAD_OFFSET, want);
+                                if (got <= 0) break;
+                                boolean last = sent + got >= total;
+                                PtpCodec.fillDataFrame(frame,
+                                        last ? PtpCodec.T_END_DATA : PtpCodec.T_DATA, tx, got);
+                                send(frame, 0, PtpCodec.dataFrameLen(got));
+                                sent += got;
+                            }
+                            okCount++;
+                        } finally {
+                            if (reader != null) {
+                                try {
+                                    reader.close();
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                        }
+                    }
+                    i++;
+                }
+            } finally {
+                aborted.set(true);
+                parser.interrupt();
+                try {
+                    parser.join(1500);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                // 排干槽位：解析线程可能刚把句柄放进去还没被取走
+                Object[] leftover = slot.poll();
+                while (leftover != null) {
+                    Handler.ObjectReader r = (Handler.ObjectReader) leftover[0];
+                    if (r != null) {
+                        try {
+                            r.close();
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                    leftover = slot.poll();
+                }
+            }
+            long ms = System.currentTimeMillis() - beganAt;
+            if (ms > 0) {
+                AppLog.i("Net", "批量传输完成 " + okCount + "/" + items.length + " 项 " + ms + "ms");
+            }
+        }
+
+        /** 等下一张令牌（连接复用）；对端关连接 → 返回 null，循环安静退出。 */
+        private PtpCodec.Msg recvQuiet() {
+            try {
+                return recv();
+            } catch (IOException e) {
+                return null;
+            }
         }
 
 

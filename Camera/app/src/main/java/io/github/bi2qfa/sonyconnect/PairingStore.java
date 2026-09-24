@@ -288,24 +288,6 @@ public class PairingStore {
         sortAndPersist();
     }
 
-    /** 连接成功后刷新「最近可见」；不改密钥。 */
-    public synchronized void touch(byte[] guid8, String ip, int port, int protoVersion) {
-        Paired cur = find(guid8);
-        if (cur == null) {
-            return;
-        }
-        cur.lastSeenAt = System.currentTimeMillis();
-        if (ip != null) {
-            cur.lastIp = ip;
-        }
-        if (port > 0) {
-            cur.lastPort = port;
-        }
-        if (protoVersion != 0) {
-            cur.protoVersion = protoVersion;
-        }
-        upsert(cur);
-    }
 
     private void sortAndPersist() {
         Collections.sort(table, new Comparator<Paired>() {

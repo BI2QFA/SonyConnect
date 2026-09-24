@@ -688,7 +688,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:gravity="center"
-                    android:text="SonyConnect 2.0"
+                    android:text="SonyConnect 2.6"
                     style="@style/PfH42" />
 
                 <!-- ② 配套版本提示 + 开发者（用户定的：这两行算一块） -->
@@ -697,7 +697,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="26px"
                     android:gravity="center"
-                    android:text="配套手机端 SonyConnect 2.0 使用&#10;开发者：BI2QFA"
+                    android:text="配套手机端 SonyConnect 2.6 使用&#10;开发者：BI2QFA"
                     style="@style/PfH38" />
 
                 <!-- ③ 本机设备码 -->

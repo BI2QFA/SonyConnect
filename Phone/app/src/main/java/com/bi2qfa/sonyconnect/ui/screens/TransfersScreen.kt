@@ -27,7 +27,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -38,14 +37,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.bi2qfa.sonyconnect.R
 import com.bi2qfa.sonyconnect.core.ConnectionCenter
 import com.bi2qfa.sonyconnect.core.StorageSink
 import com.bi2qfa.sonyconnect.data.SettingsRepo
@@ -56,6 +57,7 @@ import com.bi2qfa.sonyconnect.transfer.TransferStore
 import com.bi2qfa.sonyconnect.ui.FloatingNavInset
 import com.bi2qfa.sonyconnect.ui.SlimProgress
 import com.bi2qfa.sonyconnect.ui.components.Segment
+import com.bi2qfa.sonyconnect.ui.components.DownloadDirMissingDialog
 import com.bi2qfa.sonyconnect.ui.components.HintText
 import com.bi2qfa.sonyconnect.ui.components.IconCircle
 import com.bi2qfa.sonyconnect.ui.components.RowIconAction
@@ -63,6 +65,10 @@ import com.bi2qfa.sonyconnect.ui.theme.IconTints
 import com.bi2qfa.sonyconnect.ui.theme.Motion
 import com.bi2qfa.sonyconnect.ui.components.MsIcon
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import com.bi2qfa.sonyconnect.data.LocalPhoto
+import androidx.compose.runtime.mutableIntStateOf
+import com.bi2qfa.sonyconnect.ui.components.WholeAreaPressScope
+import com.bi2qfa.sonyconnect.ui.components.LocalRowInteraction
 
 /**
  * 传输页：每项文件一张卡片、独立进度条与状态；
@@ -76,10 +82,15 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
  * 卡片把"文件名 / 状态 / 进度 / 字节数"框成一件独立的事，一屏十项也不会串行。
  */
 @Composable
-fun TransfersScreen() {
+fun TransfersScreen(
+    /** 控制中心面板里的两件事：由 MainActivity 透传（预览器里的面板要用）。 */
+    onOpenSettings: () -> Unit = {},
+    onSwitchDevice: (String) -> Unit = {},
+) {
     val context = LocalContext.current
     val items = TransferStore.items
     val running = TransferStore.batchRunning
+    val scope = rememberCoroutineScope()
 
     val notifPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -87,8 +98,15 @@ fun TransfersScreen() {
 
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClearAll by remember { mutableStateOf(false) }
+    /** 下载目录预检失败（目录被删/权限回收）→ 弹窗，文件一律不入队（用户定版）。 */
+    var dirMissing by remember { mutableStateOf(false) }
 
-    fun openFile(item: TransferItem) {
+    // 应用内照片查看器：点开时把"这批可看的照片"钉住（之后列表变化不影响正在看的这一轮）
+    var viewerItems by remember { mutableStateOf<List<TransferItem>?>(null) }
+    var viewerIndex by remember { mutableIntStateOf(0) }
+
+    /** 长按已完成项（用户定版）：交给系统选择器"用其他应用打开"。 */
+    fun openWithOtherApp(item: TransferItem) {
         val path = item.path
         // 与下载落盘走同一个路径函数：两边各算一次迟早会不一致，
         // 表现是"显示已完成、点开却说文件不存在"
@@ -110,6 +128,21 @@ fun TransfersScreen() {
                 context, "没有可以打开此文件的应用", android.widget.Toast.LENGTH_SHORT,
             ).show()
         }
+    }
+
+    fun openFile(item: TransferItem) {
+        if (LocalPhoto.openable(item.name)) {
+            val gallery = items.filter {
+                it.state == TransferState.DONE && LocalPhoto.openable(it.name)
+            }
+            val idx = gallery.indexOfFirst { it.id == item.id }
+            if (idx >= 0) {
+                viewerItems = gallery
+                viewerIndex = idx
+                return
+            }
+        }
+        openWithOtherApp(item)
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -209,8 +242,10 @@ fun TransfersScreen() {
                     Segment(
                         index = index,
                         count = count,
-                        // 已完成项点击 → 系统选择器打开（用户定版）
+                        // 单击 = 应用内查看（图片）/ 系统选择器（其它）；
+                        // 长按 = 一律交给系统选择器"用其他应用打开"（用户定版）
                         onClick = if (done) ({ openFile(item) }) else null,
+                        onLongClick = if (done) ({ openWithOtherApp(item) }) else null,
                         // 增删与挪位走弹簧：删掉一项时下面的段是"滑上来"而不是"跳上来"
                         modifier = Modifier.animateItem(
                             placementSpec = Motion.spatialDefault(),
@@ -309,41 +344,56 @@ fun TransfersScreen() {
                 targetScale = 0.7f,
             ) + fadeOut(Motion.effectsFast()),
         ) {
-            ExtendedFloatingActionButton(
-                onClick = {
-                    if (running) {
-                        DownloadService.stopCurrent(context)
-                    } else if (ConnectionCenter.state != ConnectionCenter.State.CONNECTED) {
-                        // 没连相机就点"开始传输"：说清楚并按兵不动（服务端也有一道同样的闸）
-                        android.widget.Toast.makeText(
-                            context, "相机未连接，无法开始传输", android.widget.Toast.LENGTH_SHORT,
-                        ).show()
-                    } else {
-                        TransferStore.resetFailedForStart()
-                        if (Build.VERSION.SDK_INT >= 33) {
-                            notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        } else {
-                            DownloadService.start(context)
-                        }
-                    }
-                },
+            // ★ 整颗按钮都能驱动图标的按下变形（用户实测："只有精准按到图标才会变形"）：
+            //   FAB 拿不到库的交互源，所以由这个壳用 Initial pass 观察**整块区域**的按下，
+            //   再经 LocalRowInteraction 把信号递给图标。
+            WholeAreaPressScope(
                 modifier = Modifier
-                    .padding(20.dp)
-                    // 悬浮导航盖在内容上，且右上角的圆形按钮就在右下角这一带：
-                    // 不留余地的话 FAB 会被它压住（实测只剩"始…(1)"露在外面）
-                    .padding(bottom = FloatingNavInset),
+                    // ★ 与文件页的"开始传输"**同一个高度**（用户定版：两个都按文件页
+                    //   的高度再降低一点）。两处用同一个算式，改一处不会漂。
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = FloatingNavInset - 12.dp),
             ) {
-                MsIcon(
-                    icon = if (running) MsIcon.STOP else MsIcon.START,
-                    contentDescription = null,
-                    // ★ 不传 interactionSource：`ExtendedFloatingActionButton` 拿不到
-                    //   它的交互源（API 上没有这个参数）。让图标自己检测按下 ——
-                    //   它在这个 FAB 里只是图形，点击仍归 FAB，不冲突。
-                    animated = true,
-                    interactionSource = null,
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(if (running) "停止传输" else "开始传输")
+                ExtendedFloatingActionButton(
+                    onClick = {
+                        if (running) {
+                            DownloadService.stopCurrent(context)
+                        } else if (ConnectionCenter.state != ConnectionCenter.State.CONNECTED) {
+                            // 没连相机就点"开始传输"：说清楚并按兵不动（服务端也有一道同样的闸）
+                            android.widget.Toast.makeText(
+                                context, "相机未连接，无法开始传输", android.widget.Toast.LENGTH_SHORT,
+                            ).show()
+                        } else {
+                            // ★ 下载目录预检（用户定版：点"开始传输"那一刻就查，不存在则弹窗、
+                            //   一个文件都不入队）：SAF query 是阻塞调用，放 IO 线程；
+                            //   预检通过才继续原有的"重置失败项 + 起服务"流程。
+                            scope.launch {
+                                val dirOk = withContext(Dispatchers.IO) {
+                                    StorageSink.downloadDirAvailable(context, SettingsRepo.downloadTreeUri)
+                                }
+                                if (!dirOk) {
+                                    dirMissing = true
+                                    return@launch
+                                }
+                                TransferStore.resetFailedForStart()
+                                if (Build.VERSION.SDK_INT >= 33) {
+                                    notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                } else {
+                                    DownloadService.start(context)
+                                }
+                            }
+                        }
+                    },
+                ) {
+                    MsIcon(
+                        icon = if (running) MsIcon.STOP else MsIcon.START,
+                        contentDescription = null,
+                        animated = true,
+                        interactionSource = LocalRowInteraction.current,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (running) "停止传输" else "开始传输")
+                }
             }
         }
 
@@ -368,6 +418,56 @@ fun TransfersScreen() {
                     TextButton(onClick = { confirmClearAll = false }) { Text("取消") }
                 },
             )
+        }
+
+    // ★ 用户定版：弹窗的"选择目录"**直接拉起系统目录选择器**（不再绕设置页）
+    val treePicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }
+            SettingsRepo.updateDownloadTreeUri(uri.toString())
+        }
+    }
+        // 下载目录不可用：弹窗提示 + 给一条"去设置"的路（预检已拦，未入队、服务未启动）
+        if (dirMissing) {
+            DownloadDirMissingDialog(
+                dirLabel = SettingsRepo.downloadDirLabel(),
+                onPickDir = { treePicker.launch(null) },
+                onDismiss = { dirMissing = false },
+            )
+        }
+
+        // 应用内照片查看器：**用 Dialog 包一层**（与文件页大预览同一做法）——
+        // 全屏覆盖 + 系统返回键自动关掉，不必自己再接 BackHandler。
+        // usePlatformDefaultWidth=false：默认弹窗左右留边，预览图会看不全。
+        if (viewerItems != null) {
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = { viewerItems = null },
+                properties = androidx.compose.ui.window.DialogProperties(
+                    usePlatformDefaultWidth = false,
+                    // 铺满整屏（含状态栏/手势栏区域）→ 预览页真正沉浸
+                    decorFitsSystemWindows = false,
+                ),
+            ) {
+                LocalPhotoViewer(
+                    items = viewerItems.orEmpty(),
+                    startIndex = viewerIndex,
+                    onOpenSettings = onOpenSettings,
+                    onSwitchDevice = onSwitchDevice,
+                    uriOf = { it ->
+                        val rel = StorageSink.localRelPath(it.deviceDir, it.path)
+                        StorageSink.openUriOrNull(context, SettingsRepo.downloadTreeUri, rel)
+                    },
+                    onDismiss = { viewerItems = null },
+                )
+            }
         }
     }
 }

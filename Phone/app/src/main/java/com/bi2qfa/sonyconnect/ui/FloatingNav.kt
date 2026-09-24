@@ -2,9 +2,7 @@ package com.bi2qfa.sonyconnect.ui
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FiniteAnimationSpec
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -12,7 +10,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
@@ -37,7 +34,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -45,7 +41,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -57,7 +52,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TransformOrigin
@@ -71,17 +65,18 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import com.bi2qfa.sonyconnect.R
 import com.bi2qfa.sonyconnect.core.ConnectionCenter
 import com.bi2qfa.sonyconnect.data.PairingStore
 import com.bi2qfa.sonyconnect.data.ThumbStore
 import com.bi2qfa.sonyconnect.ui.theme.Motion
 import com.bi2qfa.sonyconnect.transfer.TransferStore
-import kotlinx.coroutines.delay
-import kotlin.math.min
-import kotlin.math.pow
 import com.bi2qfa.sonyconnect.ui.components.CardCorner
+import com.bi2qfa.sonyconnect.ui.components.LocalRowInteraction
 import com.bi2qfa.sonyconnect.ui.components.MsIcon
+import androidx.compose.ui.layout.positionInParent
+import kotlin.math.roundToInt
+import androidx.compose.ui.graphics.CompositingStrategy
+import com.bi2qfa.sonyconnect.ui.theme.useDarkTheme
 
 /**
  * 悬浮导航（用户定版，MD3E 走查后的形态）：
@@ -107,6 +102,28 @@ import com.bi2qfa.sonyconnect.ui.components.MsIcon
  * 一项永远滚不到栏上方（用户反馈"下面字被切割"就是这个）。
  */
 val FloatingNavInset = 112.dp
+
+/**
+ * 导航行与屏幕底边之间的**最小**间距。
+ *
+ * 关闭系统手势提示条（"小白条"）后 `navigationBars` 这个 inset 会变成 0 ——
+ * 如果直接拿它当底部间距，药丸就会贴到屏幕最下沿，位置随系统设置来回变。
+ * 兜住这个最小值，开不开小白条都停在同一高度。
+ */
+private val NavMinBottomPad = 16.dp
+
+/**
+ * 悬浮导航行实际占掉的高度（底部间距 + 药丸高度）；**可组合**，因为它含系统 inset。
+ *
+ * 给 FAB 这类悬浮元素用：想让某个按钮"贴着导航栏上沿"，就把底边距设成
+ * `floatingNavHeight() + 一点间隙`，而不是拍一个 FloatingNavInset 那样的常数
+ * —— 常数在开/关小白条时会高出或压住。
+ */
+@Composable
+fun floatingNavHeight(): Dp {
+    val inset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    return inset.coerceAtLeast(NavMinBottomPad) + NavRowHeight
+}
 
 // ===== 导航行的几何常量（**面板展开动画要用，所以抽出来共享**）=====
 //
@@ -183,6 +200,15 @@ private val NavItemHeight = 46.15.dp
  */
 private val NavIndicatorInset = NavPadV
 /**
+ * **内层弧**（药丸里那圈浅色内嵌面）相对药丸边缘的内缩量。
+ *
+ * ★ 必须**小于** [NavIndicatorInset]（用户实测："高亮压在弧线上，左边看着不对"）：
+ *   两者取同一个值时，内层弧的弧线与选中高亮的弧线**完全重合** —— 高亮看起来像
+ *   溢出到了弧线之外，两端都不干净。往里收少一点（1.5dp < 2.75dp），高亮四周就
+ *   都有一圈可见空隙，"边框 → 细缝 → 内层弧 → 细缝 → 高亮"的层次才成立。
+ */
+private val NavRingInset = 1.5.dp
+/**
  * 药丸总宽 = 2×3 + 3×78 + 2×6 = **252dp**（参考图 253.3dp）。
  *
  * 写成一个算式而不是常量，是为了让它与上面四个数**永远自洽** —— 这正是预览工具
@@ -223,10 +249,18 @@ private val CcPanelCorner = CardCorner
 @Composable
 fun FloatingNav(
     modifier: Modifier = Modifier,
-    tabIndex: Int,
-    onTab: (Int) -> Unit,
-    onOpenSettings: () -> Unit,
-    onSwitchDevice: (String) -> Unit,
+    // 预览器（actions 模式）用不到这四个 —— 给默认值，那边只传 actions 即可
+    tabIndex: Int = -1,
+    onTab: (Int) -> Unit = {},
+    onOpenSettings: () -> Unit = {},
+    onSwitchDevice: (String) -> Unit = {},
+    /**
+     * **预览器模式**（可空）：非空时药丸里画这些动作按钮（如"旋转 / 选择"），
+     * 而不是三个 tab；**小球与它展开的控制中心面板完全照旧**（用户定版：
+     * 预览器里的球与主界面是同一个东西、同一套动画与功能）。
+     * 药丸宽度随条目数自动缩短（条目宽度是定值，见 [NavItemWidth]）。
+     */
+    actions: List<NavItemSpec>? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
     // 面板展开时，返回键先收面板（原来靠 Popup 的 focusable 吃返回键）
@@ -291,7 +325,12 @@ fun FloatingNav(
 
     // 面板要悬在导航栏**上方**：底部留白不能写死（之前写 96dp，实测导航栏占 100dp，
     // 面板底边正好压住药丸顶部）。这里按导航行的真实几何算（见 NavRowHeight）。
-    val navBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    // ★ 这里必须与导航行**同一口径**（同样 clamp 到 NavMinBottomPad）：
+    //   否则关掉系统小白条后 inset=0，导航行被兜住不下移、而面板按 0 算，
+    //   面板就会压住药丸顶部。
+    val navBottomInset =
+        WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            .coerceAtLeast(NavMinBottomPad)
     val panelBottomPadding = navBottomInset + NavRowHeight + CcPanelGap
     val density = LocalDensity.current
 
@@ -323,17 +362,32 @@ fun FloatingNav(
         //   浮在暗层之上，底部就"和谐"了。没有 pointerInput，触摸会穿透到内容。
         //   ★ 高度 = 手势栏 + 导航行的一半：渐变的"最深"一线正好落在导航条的
         //     垂直中点，往上是内容区。
+        // ★★ **底部渐隐层**（用户定版）：从屏幕底边向上、到导航行一半高度处，
+        //   由透明渐变到"底色"——**深色模式用黑、浅色模式用白**（用户定版：
+        //   "加一个深浅色检测，浅色模式下就改成和黑色渐变对应的白色渐变"）。
+        //   层级刻意放在**这个 Box 的第一个孩子** —— 它在 Scaffold 内容之上
+        //   （FloatingNav 整体盖在内容上）、在导航行与面板之下（它们是这个 Box 的
+        //   后置孩子）：内容渐渐沉进底色里，导航条和小球浮在其上，底部就"和谐"了。
+        //   没有 pointerInput，触摸会穿透到内容。
+        //   ★ 高度 = 手势栏 + 导航行的一半：渐变的"最深"一线正好落在导航条的
+        //     垂直中点，往上是内容区。
+        val dark = useDarkTheme()
+        val scrim = if (dark) Color.Black else Color.White
         Box(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .height(navBottomInset + NavRowHeight / 2)
+                // ★ 2026-09-22 加强（用户定版"深浅色都加强"）：带子从"导航行的一半"
+                //   抬到"导航行的 0.8"，三档透明度也整体上调。浅色模式下白压白的
+                //   对比天生比黑压黑弱，所以浅色时再多给一点（+0.06），两种模式看起来
+                //   的强度才接近。
+                .height(navBottomInset + NavRowHeight * 0.8f)   // navBottomInset 已含 clamp
                 .background(
                     Brush.verticalGradient(
                         0f to Color.Transparent,
-                        0.45f to Color.Black.copy(alpha = 0.10f),
-                        0.75f to Color.Black.copy(alpha = 0.26f),
-                        1f to Color.Black.copy(alpha = 0.50f),
+                        0.35f to scrim.copy(alpha = if (dark) 0.18f else 0.24f),
+                        0.70f to scrim.copy(alpha = if (dark) 0.46f else 0.52f),
+                        1f to scrim.copy(alpha = if (dark) 0.80f else 0.86f),
                     ),
                 ),
         )
@@ -395,12 +449,26 @@ fun FloatingNav(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.navigationBars)
+                // ★ 底部间距 = max(系统手势栏, [NavMinBottomPad])。不能直接用
+                //   windowInsetsPadding(navigationBars)：**关闭系统手势提示条（小白条）后
+                //   这个 inset 会变成 0**，导航药丸就一路贴到屏幕最下沿，与开着的时候
+                //   位置明显不同（用户实测两张截图对比）。兜一个最小值，两种情况位置一致。
+                .padding(bottom = navBottomInset.coerceAtLeast(NavMinBottomPad))
                 .padding(horizontal = navEdgePadding, vertical = NavRowPadV),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            NavPill(tabIndex = tabIndex, onTab = onTab)
+            NavPill(
+                // ★ 预览器与主界面用**同一个指示块**（同一段绘制代码、同一套尺寸与内缩）——
+                //   用户实测"预览器里高亮与外边框的间距和主界面不一样"：那是我另画了一层
+                //   逐项底色，两套几何迟早对不上。现在统一成一层，间距必然一致。
+                //   "不滑一下"由下面 if 里的动画保证：首次出现即以目标位置初始化。
+                items = actions ?: listOf(
+                    NavItemSpec(MsIcon.NAV_HOME, "主界面", tabIndex == 0) { onTab(0) },
+                    NavItemSpec(MsIcon.NAV_FILES, "文件", tabIndex == 1) { onTab(1) },
+                    NavItemSpec(MsIcon.NAV_TRANSFERS, "传输", tabIndex == 2) { onTab(2) },
+                ),
+            )
             Spacer(Modifier.width(NavGap))
             // ★★ 两颗按钮由**同一个状态机**算出（见 [buttonState]）—— 这是"紫色按钮
             //    消失、只剩一种按钮状态"那个 bug 的正解：不是一个量控制一颗、
@@ -750,13 +818,99 @@ private val NavEdgePaddingMin = 8.dp
  * 两个**独立**控件，所以药丸自己摆：固定内边距 + 三个固定尺寸图标位，
  * 宽度只占自己该占的那一份。
  */
+/**
+ * 药丸里的一个条目。主界面用三个 tab；**预览器**用它塞两个动作按钮
+ * （旋转/选择、旋转/信息）—— 药丸的几何与动效完全一致，只是条目数与内容不同。
+ */
+class NavItemSpec(
+    val icon: MsIcon,
+    val label: String,
+    /** 未选中传 -1（预览器的动作按钮没有"选中"这回事）。 */
+    val selected: Boolean,
+    val onClick: () -> Unit,
+)
+
+/**
+ * 悬浮导航一族的**强调色角色表**（用户定版 2026-09-22：浅色下强调色可读性差 → 全局改口径）。
+ *
+ * ## 两条硬要求（用户定版）
+ * 1. **必须与主题强调色相符** —— 全族一律取 **primary 族**。不用 secondary 族：种子色/动态取色下
+ *    secondary 会偏成另一个色相（实测浅色下选中高亮变成了"灰蓝色"，与主题色对不上）。
+ * 2. **图标必须清晰可辨** —— 填充与内容永远取 MD3 的 on 配对（primary/onPrimary、
+ *    primaryContainer/onPrimaryContainer），任何调色盘都保证对比度。
+ *
+ * ## 为什么浅色不能用容器档（实测数值，与具体调色盘无关）
+ * 这一族组件自己的面是 `surfaceContainerHigh/Highest`：浅色 = tone 92/90、深色 = tone 17/22。
+ * 而容器档强调色浅色 = tone 90 —— **同档**：实测选中高亮 (219,226,247) 压在药丸面
+ * (224,226,236) 上，对比度只有 **1.0:1**（等于没画）；圆钮 (174,192,239) 压页面底也只有
+ * 1.56:1。这是 tone 表的结构性结果：四套种子色、系统动态取色，浅色下都必然糊。
+ *
+ * ## 口径
+ * - **浅色**：填充取**实色档** `primary`（tone 40）+ 内容 `onPrimary`（tone 100）——
+ *   与面（tone 90~99）亮度差 ≥ 5 档，且就是主题强调色本身。
+ * - **深色**：填充取**容器档** `primaryContainer`（tone 30）+ 内容 `onPrimaryContainer`
+ *   （tone 90）—— 与面（tone 17~22）分得开，维持既有观感。
+ *
+ * ## 覆盖点（一处不漏）
+ * 药丸滑动指示块 + 选中图标、圆钮底/图标/内缘进度环、面板起步闪色（必须与圆钮同色，
+ * 否则"按钮飞上来变面板"的错觉破功）、面板里"当前设备"高亮行。
+ * 预览器的导航栏与主界面**共用本组件**，自动同口径。
+ */
+private class NavAccents(
+    /** 药丸：滑动指示块底 + 选中图标 */
+    val indicatorFill: Color,
+    val indicatorOn: Color,
+    /** 圆钮（强调色那颗）：底 / 图标 / 内缘进度环 */
+    val buttonFill: Color,
+    val buttonOn: Color,
+    val ring: Color,
+    /** 面板：选中设备高亮行的底 / 正文与副标题 / 图标 */
+    val rowFill: Color,
+    val rowOn: Color,
+    val rowIcon: Color,
+)
+
 @Composable
-private fun NavPill(tabIndex: Int, onTab: (Int) -> Unit) {
-    val tabs = listOf(
-        Triple(0, MsIcon.NAV_HOME, "主界面"),
-        Triple(1, MsIcon.NAV_FILES, "文件"),
-        Triple(2, MsIcon.NAV_TRANSFERS, "传输"),
-    )
+private fun navAccents(): NavAccents {
+    val cs = MaterialTheme.colorScheme
+    return if (useDarkTheme()) {
+        NavAccents(
+            indicatorFill = cs.primaryContainer,
+            indicatorOn = cs.onPrimaryContainer,
+            buttonFill = cs.primaryContainer,
+            buttonOn = cs.onPrimaryContainer,
+            ring = cs.primary,
+            rowFill = cs.primaryContainer,
+            rowOn = cs.onPrimaryContainer,
+            rowIcon = cs.primary,
+        )
+    } else {
+        NavAccents(
+            indicatorFill = cs.primary,
+            indicatorOn = cs.onPrimary,
+            buttonFill = cs.primary,
+            buttonOn = cs.onPrimary,
+            ring = cs.onPrimary,
+            rowFill = cs.primary,
+            rowOn = cs.onPrimary,
+            rowIcon = cs.onPrimary,
+        )
+    }
+}
+
+@Composable
+private fun NavPill(items: List<NavItemSpec>) {
+    val accents = navAccents()
+    val tabIndex = items.indexOfFirst { it.selected }
+    // ★★ 滑动高亮的水平位置**按实测的条目位置算**，不再用"条目宽×序号"推算。
+    //   推算版会累积误差：条目实际宽度由布局决定（受边框/取整影响），与常量算出的
+    //   有零点几 dp 的差，到最右那一项就明显了 —— 用户实测"选最左边时高亮到边缘的
+    //   距离均匀，选到最右边就不均匀"。改用实测位置后，左右两端的高亮到药丸边缘的
+    //   距离**必然相等**（都是 [NavIndicatorInset]）。
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val itemLeft = remember { androidx.compose.runtime.mutableStateListOf<Float>() }
+    val itemWidthPx = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    val insetPx = with(density) { NavIndicatorInset.toPx() }
     // ★ 选中指示是**一块滑过去的药丸**，不是"这项亮一下、那项灭一下"：
     //   条目宽度与间距都是定值，所以节距（pitch）是算得出来的，指示块按
     //   index × pitch 平移即可，不必去量每个条目的坐标。
@@ -767,13 +921,6 @@ private fun NavPill(tabIndex: Int, onTab: (Int) -> Unit) {
     //   **之内**，所以指示块的位置是 `内边距 + 节距 × 序号`。漏掉那个内边距就是恒定
     //   左偏一整格（用户反馈"下方胶囊里的高亮选中错位了"就是这个）。两者都从上面的
     //   顶层常量取，改一处不会又把另一处弄漂。
-    val indicatorX by animateDpAsState(
-        targetValue = NavPadH + (NavItemWidth + NavItemGap) * tabIndex + NavIndicatorInset,
-        // 用户定版：**由快到慢**（见 Motion.fastOut）。不用库的 spatial 弹簧 ——
-        // 那条是"慢起→中段最快→慢收"的 S 形，起步偏慢，不符合这个趋势。
-        animationSpec = Motion.fastOut(),
-        label = "navIndicator",
-    )
     val indicatorShape = RoundedCornerShape(50)
     Surface(
         shape = indicatorShape,
@@ -786,30 +933,68 @@ private fun NavPill(tabIndex: Int, onTab: (Int) -> Unit) {
         shadowElevation = 6.dp,
     ) {
         Box(contentAlignment = Alignment.CenterStart) {
+            // ★ **内层弧**（用户定版："药丸两端要有一样的双层弧、两端对称"）。
+            //   左端本来就有两层：外层的圆角描边 + 里面那块浅色的选中指示药丸；
+            //   右端只有外层描边，于是同一颗药丸左右看着不一样饱满。
+            //   这里补一层**同心**的内嵌圆角面（往里缩 [NavIndicatorInset]，
+            //   圆角同步减小同样的量 → 与外层弧同心），两端就都有"边框 → 细缝 →
+            //   内层弧"的结构了，左右一致。
+            //   颜色用比外层描边亮一档的 surfaceContainerHighest：对比够看出弧线，
+            //   又不至于抢选中指示药丸的颜色。
+            Surface(
+                modifier = Modifier
+                    .matchParentSize()
+                    .padding(NavRingInset),
+                shape = RoundedCornerShape(percent = 50),
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+            ) {}
             // 底层：滑动的指示药丸（高度与条目一致，由 Box 垂直居中 → 与条目同高同位；
             // 宽度比图标位窄 [NavIndicatorInset]×2 —— 防端帽穿模，见那里的注释）
-            Box(
+            // ★ **预览器里没有"选中"这回事**（动作按钮不表示状态）：这时不画指示药丸，
+            //   否则药丸左端会挂着一块无意义的高亮。
+            // ★ 动画**写在 if 里面**：这样首帧就是"直接出现在目标位置"（animate*AsState 的
+            //   初值 = 当时的目标值），不会因为条目位置要等一帧测量而从左端滑进来；
+            //   之后的 tab 切换照旧走 Motion.fastOut 的"由快到慢"位移。
+            if (tabIndex >= 0 && itemWidthPx.value > 0f) {
+                val indicatorX by animateFloatAsState(
+                    targetValue = itemLeft.getOrNull(tabIndex)?.plus(insetPx) ?: 0f,
+                    animationSpec = Motion.fastOut(),
+                    label = "navIndicator",
+                )
+                Box(
                 Modifier
-                    .offset(x = indicatorX)
+                    .offset {
+                    // ★ 必须**四舍五入**，不能用 toInt()（截断）：2.75dp 在 density 3.25 上是
+                    //   8.94px，截断成 8px 就比竖向留白（9px）少 1px —— 用户实测
+                    //   "最左边的图标左端离边缘距离偏小"，差的就是这 1px。
+                    androidx.compose.ui.unit.IntOffset(indicatorX.roundToInt(), 0)
+                }
                     .size(
-                        width = NavItemWidth - NavIndicatorInset * 2,
+                        width = with(density) { (itemWidthPx.value - insetPx * 2).toDp() },
                         height = NavItemHeight,
                     )
                     .clip(indicatorShape)
-                    .background(MaterialTheme.colorScheme.secondaryContainer),
-            )
+                    .background(accents.indicatorFill),
+                )
+            }
             // 上层：三个图标位（自身不画底色，底色由上面那块滑动的药丸负责）
             Row(
                 Modifier.padding(horizontal = NavPadH, vertical = NavPadV),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(NavItemGap),
             ) {
-                tabs.forEach { (idx, icon, label) ->
+                items.forEachIndexed { idx, spec ->
                     NavPillItem(
-                        selected = tabIndex == idx,
-                        icon = icon,
-                        label = label,
-                        onClick = { onTab(idx) },
+                        selected = spec.selected,
+                        icon = spec.icon,
+                        label = spec.label,
+                        selectedTint = accents.indicatorOn,
+                        modifier = Modifier.onGloballyPositioned { c ->
+                            val x = c.positionInParent().x
+                            if (itemLeft.size <= idx) itemLeft.add(x) else itemLeft[idx] = x
+                            itemWidthPx.value = c.size.width.toFloat()
+                        },
+                        onClick = spec.onClick,
                     )
                 }
             }
@@ -826,10 +1011,18 @@ private fun NavPill(tabIndex: Int, onTab: (Int) -> Unit) {
  *   阻尼 0.6 允许过冲）—— 这点"pop"是指示药丸滑到位时那一拍的落点感
  */
 @Composable
-private fun NavPillItem(selected: Boolean, icon: MsIcon, label: String, onClick: () -> Unit) {
+private fun NavPillItem(
+    selected: Boolean,
+    icon: MsIcon,
+    label: String,
+    /** 选中态图标色 —— 由 [navAccents] 按深浅色给（浅色 = 实色块上的反色）。 */
+    selectedTint: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
     val shape = RoundedCornerShape(50)
     val tint by animateColorAsState(
-        targetValue = if (selected) MaterialTheme.colorScheme.onSecondaryContainer
+        targetValue = if (selected) selectedTint
         else MaterialTheme.colorScheme.onSurfaceVariant,
         animationSpec = Motion.fastOutFade(),
         label = "navIconTint",
@@ -839,8 +1032,11 @@ private fun NavPillItem(selected: Boolean, icon: MsIcon, label: String, onClick:
         animationSpec = Motion.fastOut(),
         label = "navIconPop",
     )
+    // ★ 2.7.0：条目自己的交互源**提出来**并递给图标 —— 按到整个图标位任意处
+    //   图标都弹（旧行为是图标自检：必须精准按到字形上才弹，用户实测反馈）。
+    val itemSource = remember { MutableInteractionSource() }
     Box(
-        Modifier
+        modifier
             // 宽度 > 高度：图里的药丸是**修长**的，图标之间留白很大。
             // 48dp 高度是触摸区下限，再矮就不好按了。
             .width(NavItemWidth)
@@ -848,7 +1044,7 @@ private fun NavPillItem(selected: Boolean, icon: MsIcon, label: String, onClick:
             .clip(shape)
             // 按压水波纹铺满条目、由上面的 clip 裁成药丸形：与滑动的指示块同形同大
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = itemSource,
                 // 用户定版：导航条不要按压水波纹（选中态由滑动的指示块表达）
                 indication = null,
                 onClick = onClick,
@@ -863,6 +1059,7 @@ private fun NavPillItem(selected: Boolean, icon: MsIcon, label: String, onClick:
         MsIcon(
             icon = icon,
             contentDescription = label,
+            interactionSource = itemSource,
             modifier = Modifier.size(26.dp).scale(pop),
             tint = tint,
             size = 26.dp,
@@ -914,6 +1111,10 @@ private fun ControlCenterButton(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
+    val accents = navAccents()
+    // ★ 2.7.0：圆钮的交互源提出来（两颗钮共用）并递给箭头 —— 按到整个圆钮任意处，
+    //   箭头都跟着变化（旧行为是图标自检：必须精准按在箭头上）。
+    val ccSource = remember { MutableInteractionSource() }
     val batchRunning = TransferStore.batchRunning
     val thumbTotal = ThumbStore.batchTotal
     val thumbTotal2 = thumbTotal
@@ -921,7 +1122,14 @@ private fun ControlCenterButton(
     //   batchRunning 还没置位，此时 batchDone == batchTotal（例如 10/10）会被算成
     //   100% —— 于是满圈闪一下再掉回真实进度（用户实测）。只有**真的在拉**才算数。
     val downloading = batchRunning
-    val thumbsFetching = thumbTotal2 > 0 && ThumbStore.batchDone < thumbTotal2
+    // ★ 2.6：自动传输开启时，小图与大预览合并成"文件周期"进度（与面板同一数据源）——
+    //   顶栏环若还按旧的 batchDone/batchTotal 走，会和面板的周期数字打架。
+    val autoOn = ThumbStore.autoTotal > 0
+    val thumbsFetching = if (autoOn) {
+        ThumbStore.autoDone < ThumbStore.autoTotal
+    } else {
+        thumbTotal2 > 0 && ThumbStore.batchDone < thumbTotal2
+    }
     val active = downloading || thumbsFetching
 
     val fraction = when {
@@ -929,6 +1137,7 @@ private fun ControlCenterButton(
             val total = TransferStore.batchTotalBytes.coerceAtLeast(1)
             TransferStore.batchDoneBytes.coerceIn(0, total) / total.toFloat()
         }
+        thumbsFetching && autoOn -> ThumbStore.autoDone.toFloat() / ThumbStore.autoTotal.coerceAtLeast(1)
         thumbsFetching -> ThumbStore.batchDone.toFloat() / thumbTotal2
         else -> 0f
     }
@@ -1008,10 +1217,10 @@ private fun ControlCenterButton(
                         .size(CcButtonSize)
                         .shadow(6.dp, CircleShape)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .background(accents.buttonFill)
                         .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
                         .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
+                            interactionSource = ccSource,
                             indication = null,
                             onClick = onClick,
                         ),
@@ -1025,7 +1234,8 @@ private fun ControlCenterButton(
                         contentDescription = if (expanded) "收起控制中心" else "展开控制中心",
                         modifier = Modifier.size(26.dp).rotate(rotation),
                         size = 26.dp,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        interactionSource = ccSource,
+                        tint = accents.buttonOn,
                     )
                 }
                 // 进度环画在按钮**之上**、直径与按钮一致 → 环正好嵌在圆的内部边缘
@@ -1036,7 +1246,7 @@ private fun ControlCenterButton(
                         progress = { shownFraction },
                         modifier = Modifier.size(CcButtonSize),
                         strokeWidth = 4.dp,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = accents.ring,
                         trackColor = Color.Transparent,
                     )
                 }
@@ -1071,7 +1281,7 @@ private fun ControlCenterButton(
                         .background(MaterialTheme.colorScheme.surfaceContainerHighest)
                         .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
                         .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
+                            interactionSource = ccSource,
                             indication = null,
                             onClick = onClick,
                         ),
@@ -1084,6 +1294,7 @@ private fun ControlCenterButton(
                         modifier = Modifier.size(26.dp).rotate(rotation),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         size = 26.dp,
+                        interactionSource = ccSource,
                     )
                 }
                 // ★ 用户定版："悬浮窗展开之后下面的小球也应该显示下载进度条，
@@ -1180,15 +1391,6 @@ private fun ControlCenterPanel(
     onOpenSettings: () -> Unit,
     onSwitchDevice: (String) -> Unit,
 ) {
-    // 每秒跳一次：进度/速度/剩余时间都是按秒变的。
-    // 收起时它仍每秒钟改一次自己的状态，但没人读就没人重组，代价可以忽略；
-    // 反过来若挂在"展开后"，展开的第一帧才开始计时，速度/剩余时间会先空一下。
-    val tick = produceState(0) {
-        while (true) {
-            delay(1000)
-            value++
-        }
-    }
 
     Box(Modifier.fillMaxSize()) {
         // 收起到底之后整块不画：否则缩在右下角的那个小块会**继续吃触摸**，
@@ -1440,7 +1642,8 @@ private fun PanelSurface(
     onSwitchDevice: (String) -> Unit,
 ) {
     val panelColor = MaterialTheme.colorScheme.surfaceContainerHighest
-    val accent = MaterialTheme.colorScheme.primaryContainer
+    // ★ 起步闪色必须与**圆钮同色**（"按钮飞上来变面板"的错觉全靠它），所以取同一张角色表
+    val accent = navAccents().buttonFill
     val density = LocalDensity.current
     val buttonPx = with(density) { CcButtonSize.toPx() }
 
@@ -1551,7 +1754,7 @@ private fun PanelSurface(
                 },
         ) {
             // ---- ① 进度段：仅在进行中显示 ----
-            if (TransferStore.batchRunning || ThumbStore.batchTotal > 0) {
+            if (TransferStore.batchRunning || ThumbStore.batchTotal > 0 || ThumbStore.autoTotal > 0) {
                 ProgressSection()
                 HorizontalDivider(Modifier.padding(horizontal = 16.dp))
             }
@@ -1618,7 +1821,21 @@ private fun ProgressSection() {
             )
         }
 
-        if (ThumbStore.batchTotal > 0) {
+        // ★ 2.6（用户定版）：自动传输开启时，小图与大预览是**同一个"文件周期"的两半**
+        //   （并发拉取、两者都完成才进入下一个文件），分成两行只会两个数字各跳各的 ——
+        //   合并成一行"缩略/预览图"，进度取周期数（autoDone/autoTotal）。
+        //   开关没开时 autoTotal 恒为 0，走下面原来的"缩略图"行，标题不变。
+        if (ThumbStore.autoTotal > 0) {
+            val aDone = ThumbStore.autoDone
+            val aTotal = ThumbStore.autoTotal
+            Text(
+                if (aDone >= aTotal) "缩略/预览图传输完成 $aDone/$aTotal"
+                else "缩略/预览图 $aDone/$aTotal" + if (ThumbStore.paused) "（已暂停）" else "",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            SlimProgress(fraction = if (aTotal > 0) aDone.toFloat() / aTotal else 0f)
+        } else if (ThumbStore.batchTotal > 0) {
             val tDone = ThumbStore.batchDone
             val tTotal = ThumbStore.batchTotal
             Text(
@@ -1713,28 +1930,37 @@ private fun PanelRow(
     onClick: (() -> Unit)?,
 ) {
     // 半径 = 面板圆角 − 横向内缩 8dp，与外框**同心**（用户反馈"高亮和外框 r 角不符"）
+    val accents = navAccents()
     val shape = RoundedCornerShape(CardCorner - 8.dp)
-    val color = if (highlighted) MaterialTheme.colorScheme.primaryContainer
+    val color = if (highlighted) accents.rowFill
     else Color.Transparent
     val boxModifier = Modifier
         .fillMaxWidth()
         .padding(horizontal = 8.dp, vertical = 2.dp)
+    // ★ 2.7.0（用户定版）：行内图标要吃**本行**的按压信号 —— 按到行任意处都要弹
+    //   （旧行为是图标只认自己的边界：必须精准按在字形上才变实心）。
+    val rowSource = remember { MutableInteractionSource() }
     if (onClick == null) {
         Surface(color = color, shape = shape, modifier = boxModifier) {
-            PanelRowContent(icon, title, subtitle, highlighted)
+            CompositionLocalProvider(LocalRowInteraction provides rowSource) {
+                PanelRowContent(icon, title, subtitle, highlighted, accents)
+            }
         }
         return
     }
     Surface(
         color = color,
         onClick = onClick,
+        interactionSource = rowSource,
         // ★ 必须给形状：Surface 默认是**直角**，高亮行会在圆角卡片里
         //   戳出一个方角、水波纹也是方块（用户反馈"圆角遮罩处理粗糙"）。
         //   半径与外框**同心**：面板 CardCorner、这里内缩 8dp（见 shape 处注释）。
         shape = shape,
         modifier = boxModifier,
     ) {
-        PanelRowContent(icon, title, subtitle, highlighted)
+        CompositionLocalProvider(LocalRowInteraction provides rowSource) {
+            PanelRowContent(icon, title, subtitle, highlighted, accents)
+        }
     }
 }
 
@@ -1745,6 +1971,7 @@ private fun PanelRowContent(
     title: String,
     subtitle: String?,
     highlighted: Boolean,
+    accents: NavAccents,
 ) {
     Row(
         Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -1754,7 +1981,7 @@ private fun PanelRowContent(
                 icon = icon,
                 contentDescription = null,
                 modifier = Modifier.size(20.dp),
-                tint = if (highlighted) MaterialTheme.colorScheme.primary
+                tint = if (highlighted) accents.rowIcon
                 else MaterialTheme.colorScheme.onSurfaceVariant,
                 size = 20.dp,
             )
@@ -1764,14 +1991,14 @@ private fun PanelRowContent(
                     title,
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1,
-                    color = if (highlighted) MaterialTheme.colorScheme.onPrimaryContainer
+                    color = if (highlighted) accents.rowOn
                     else MaterialTheme.colorScheme.onSurface,
                 )
                 if (subtitle != null) {
                     Text(
                         subtitle,
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (highlighted) MaterialTheme.colorScheme.onPrimaryContainer
+                        color = if (highlighted) accents.rowOn
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }

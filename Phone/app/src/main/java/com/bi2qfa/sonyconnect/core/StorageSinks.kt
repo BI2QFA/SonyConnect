@@ -168,6 +168,43 @@ interface StorageSink {
                 } else null
             }
         }
+
+        /**
+         * **下载目录现在是否可用**（点"开始传输"前的预检，用户定版：目录不存在
+         * 就弹窗、文件一律不进传输队列）。
+         *
+         * <p>为什么需要它：目录校验原本只发生在**下载进行时**（每个文件的
+         * [StorageSink.resolve] → DocSink.init）—— 用户把目录删了/回收了权限，
+         * 点击"开始传输"后整批文件照常进队列，然后在逐个下载时静默变红。
+         * 现在把这道判定提前到"点击那一刻"。
+         *
+         * <p>阻塞（SAF 要 query 一次 contentResolver），**在 IO 线程调**。
+         *
+         * <p>判定口径：
+         * <ul>
+         *   <li>选了 SAF 目录：能对树根文档做一次子项 query 即可用 —— 目录被删、
+         *       卡拔出、权限被回收都会在这里抛异常或返回 null cursor；</li>
+         *   <li>应用专属目录（未选目录）：能创建/写入即可用（兜底恒真）。</li>
+         * </ul>
+         */
+        fun downloadDirAvailable(context: Context, treeUri: String): Boolean {
+            if (treeUri.isBlank()) {
+                val base = context.getExternalFilesDir("SonyConnect")
+                    ?: File(context.filesDir, "SonyConnect")
+                return runCatching { base.isDirectory && (base.canWrite() || base.mkdirs()) }
+                    .getOrDefault(false)
+            }
+            return runCatching {
+                val tree = Uri.parse(treeUri)
+                val rootId = DocumentsContract.getTreeDocumentId(tree)
+                val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, rootId)
+                context.contentResolver.query(
+                    children,
+                    arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                    null, null, null,
+                )?.use { true } ?: false
+            }.getOrDefault(false)
+        }
     }
 }
 

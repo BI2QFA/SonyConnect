@@ -161,6 +161,114 @@ class DataChannel(
     private fun dataLen(body: ByteArray): Int =
         if (body.size <= 4) 0 else body.size - 4
 
+    /**
+     * 批量收件（2.7.0）：一次 DATA_OPEN 之后，按 `txId = 第几项`（1 起）连续收 [count] 项。
+     *
+     * <p>每项 = `START_DATA(total, txId=i+1)` → `DATA*` → `END_DATA(txId=i+1)`；
+     * 空对象（total=0，只有 START 0 + END 0）= 相机端标记"该项不可用"，回调 null。
+     *
+     * <p>为什么要批量：实测每对象的成本 = 控制往返 + TCP 建连/慢启动 + DATA_OPEN 往返，
+     * 423KB 的预览被这些固定开销切碎；且多流并发在 2.4GHz 弱电台上互相争抢，
+     * 聚合反而**低于**单流（25MB 单流实测 2.23MB/s）。批量把固定开销摊销、让数据面回到单流。
+     *
+     * @param onObject (0 基下标, 该项字节或 null)
+     * @return 完整收到的项数（对端提前断开时 < count）
+     */
+    fun downloadMany(
+        token: Long,
+        count: Int,
+        timeoutMs: Int = 8000,
+        labels: List<String> = emptyList(),
+        /** true = 复用本通道已建好的连接（跨批共用一条 TCP，省建连/慢启动）。 */
+        reuse: Boolean = false,
+        onObject: (Int, ByteArray?) -> Unit,
+    ): Int {
+        val beganAt = android.os.SystemClock.elapsedRealtime()
+        val existing = socket
+        val s: Socket
+        if (reuse && existing != null && !existing.isClosed && existing.isConnected) {
+            s = existing
+            s.soTimeout = timeoutMs
+        } else {
+            s = socketFactory?.createSocket() ?: Socket()
+            s.tcpNoDelay = true
+            s.soTimeout = timeoutMs
+            runCatching { s.receiveBufferSize = 1024 * 1024 }
+            s.connect(InetSocketAddress(host, filePort), timeoutMs)
+            socket = s
+        }
+        val input = s.getInputStream()
+        val output = s.getOutputStream()
+        try {
+            // ── ① DATA_OPEN（明文） ──
+            output.write(PtpCodec.dataOpen(guid16, connNo, token))
+            output.flush()
+            val ack = PtpCodec.read(input)
+                ?: throw PtpProtocolException("文件端口未回 DATA_OPEN_ACK")
+            if (ack.type != PtpCodec.T_DATA_OPEN_ACK) {
+                throw PtpProtocolException(
+                    "批量通道期望 DATA_OPEN_ACK，收到 type=0x${Integer.toHexString(ack.type)}")
+            }
+            // ── ② 逐项收 ──
+            var done = 0
+            while (!closed.get() && done < count) {
+                val m = PtpCodec.read(input) ?: break
+                if (m.type != PtpCodec.T_START_DATA) {
+                    throw PtpProtocolException(
+                        "批量通道期望 START_DATA，收到 type=0x${Integer.toHexString(m.type)}")
+                }
+                val tx = PtpCodec.txIdOf(m.body)
+                val total = PtpCodec.totalOf(m.body)
+                val out = java.io.ByteArrayOutputStream(
+                    if (total in 1..(1L shl 20)) total.toInt() else 64 * 1024)
+                var got = 0L
+                var ended = false
+                while (!closed.get()) {
+                    val f = PtpCodec.read(input) ?: break
+                    val n = dataLen(f.body)
+                    when (f.type) {
+                        PtpCodec.T_DATA -> {
+                            if (PtpCodec.txIdOf(f.body) != tx) {
+                                throw PtpProtocolException("批量 DATA txId 不匹配")
+                            }
+                            if (n > 0) {
+                                out.write(f.body, 4, n)
+                                got += n
+                            }
+                        }
+                        PtpCodec.T_END_DATA -> {
+                            if (PtpCodec.txIdOf(f.body) != tx) {
+                                throw PtpProtocolException("批量 END_DATA txId 不匹配")
+                            }
+                            if (n > 0) {
+                                out.write(f.body, 4, n)
+                                got += n
+                            }
+                            ended = true
+                            break
+                        }
+                        else -> throw PtpProtocolException(
+                            "批量通道收到意外包 type=0x${Integer.toHexString(f.type)}")
+                    }
+                }
+                if (!ended) return done
+                // 长度不符（短收）按"该项失败"回调 null —— 与单对象路径同一条纪律
+                val arr = if (got == total) out.toByteArray() else null
+                // ★ 2.7.0 提速诊断：逐项到达时刻 —— "项与项之间的空档"就是相机端的解析
+                //   时间（向前看没盖住的部分）；"项内变慢"才是链路问题。
+                android.util.Log.d("DataCh", "item ${tx - 1} "
+                        + (labels.getOrNull(tx - 1) ?: "?") + " "
+                        + (if (arr == null) 0 else arr.size) + "B @"
+                        + (android.os.SystemClock.elapsedRealtime() - beganAt) + "ms")
+                onObject(tx - 1, arr)
+                done++
+            }
+            return done
+        } finally {
+            if (!reuse) close()      // 复用模式：连接留给下一批，由调用方决定何时关
+        }
+    }
+
     override fun close() {
         closed.set(true)
         try {

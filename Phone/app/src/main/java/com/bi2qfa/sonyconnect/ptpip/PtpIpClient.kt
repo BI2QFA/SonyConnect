@@ -29,7 +29,7 @@ class PtpProtocolException(message: String) : IOException(message)
  *
  * **全程明文**：加解密与双向认证已整体移除。准入判定只有一处 —— 相机端在 Init
  * 阶段查配对表；本端也一样（[com.bi2qfa.sonyconnect.data.PairingStore]），
- * 未配对就只能先走 [pairAndConnect]。
+ * 未配对就只能先走配对流程（`ObjectRepository.pairBegin` → `pairExchange`）。
  *
  * 事件连接（[openEventChannel]）是同一协议端口上的第二条 TCP，只收推送。
  * 文件传输走独立文件端口，见 [DataChannel]。
@@ -108,35 +108,6 @@ class PtpIpClient(
         link.startReader(onDisconnected = { notifyControlDisconnected() }) { m -> onControlMessage(m) }
     }
 
-    /**
-     * **配对**并直接建立会话（首次连接某台相机时走这条）。
-     *
-     * Init Cmd → `PAIR_BEGIN → PAIR_EXCHANGE`（明文核对相机屏上的 6 位码）→ 落表。
-     * 之所以不重连：相机端在处理 ② 时就落表了，这条连接直接进控制循环，
-     * 重连只是白白多一次往返（还多一次掉线机会）。
-     *
-     * @return true = 相机按 6 位码确认了这次配对；false = 相机早就认识本机
-     *         （把配对请求当协议错用回绝了），会话一样建好，只是那个码没被看过。
-     */
-    @Throws(IOException::class)
-    fun pairAndConnect(code: String, timeoutMs: Int = 20000): Boolean {
-        val link = openLink(timeoutMs)
-        withHandshakeTimeout(link, timeoutMs) { initHandshake(link) }
-        val pairing = PairingClient(
-            sendReq = { op, tx, blob -> link.send(PtpCodec.opReqBlob(op, tx, blob)) },
-            recvRsp = { link.recvPlainOpBlob() },
-        )
-        val result = try {
-            pairing.run(code, friendlyName)
-        } catch (e: Exception) {
-            // 出错要主动告诉相机放弃这次尝试，并关掉这条已经用不了的连接
-            pairing.abort()
-            link.closeQuietly()
-            throw e
-        }
-        link.startReader(onDisconnected = { notifyControlDisconnected() }) { m -> onControlMessage(m) }
-        return !result.alreadyPaired
-    }
 
     private fun notifyControlDisconnected() {
         if (closed.get()) return
@@ -459,8 +430,41 @@ class PtpIpClient(
     fun getObjectWhole(path: String, kind: Int): TransferTicket =
         getObject(path, kind, 0L, -1)
 
+    /**
+     * **批量登记**（2.7.0，见相机端 `OP_GET_OBJECT_BATCH`）：一次控制往返换一个批量令牌，
+     * 随后在同一条数据连接上把整批对象连续取走（`DataChannel.downloadMany`）。
+     *
+     * <p>把"每对象一次控制往返 + TCP 建连/慢启动"摊销掉；固定开销正是 423KB 预览
+     * 跑不出带宽的主因。
+     *
+     * @param items (相机路径, kind) 列表，≤32 项（相机端上限）
+     */
+    @Throws(IOException::class)
+    fun getObjectBatch(items: List<Pair<String, Int>>): TransferTicket {
+        val tx = nextTx()
+        val sb = StringBuilder()
+        for ((path, kind) in items) {
+            sb.append(if (kind == PtpCodec.KIND_PREVIEW) 'P' else 'T')
+                .append('\t').append(path).append('\n')
+        }
+        val r = request(
+            PtpCodec.opReqBlob(PtpCodec.OP_GET_OBJECT_BATCH, tx, pathBytes(sb.toString()))
+        )
+        checkOk(r)
+        if (r.params.size < 2) throw PtpProtocolException("GET_OBJECT_BATCH 参数不足: ${r.params.size}")
+        return TransferTicket(r.params[0].toLong() and 0xFFFFFFFFL, r.params[1])
+    }
+
     /** 缩略图队列控制（begin/pause/resume/cancel）。 */
     @Throws(IOException::class)
+    /**
+     * 缩略图队列控制（THUMB_QUEUE_BEGIN 等）。
+     *
+     * <p>★ 2.6：名单不再截断后可能上千条 —— 路径按行拼成一个 blob 一次发。
+     * 每条约 30 字节，几千张也就几十 KB，远低于 `MAX_PACKET`（1MB，两端一致）；
+     * 若未来真的塞爆（约 3 万条以上），要改成分批发 BEGIN（相机端 begin 是整体
+     * 替换语义，分批需要先约定"追加"标记）。
+     */
     fun thumbQueue(op: Int, paths: List<String>): Boolean {
         val tx = nextTx()
         val text = paths.joinToString("\n")
@@ -599,8 +603,29 @@ class PtpIpClient(
 
 
     companion object {
-        /** 协议代次：P1–P4 报 1.0；P5 定稿升 2.0。 */
-        const val PROTO_VERSION = (1 shl 16)
+        /**
+         * **协议代次**（握手 Init Cmd Req/Ack 里那个 32 位版本字段）。
+         *
+         * 编码 = 主版本<<16 | 次版本<<8 | 修订号 —— 标准 PTP/IP 只用高 16 位当主版本
+         * （1.0 写作 `1 shl 16`），这里把次版本与修订号放进低 16 位，于是
+         * **2.6 = (2 shl 16) or (6 shl 8) or 0**。
+         *
+         * ★ 与相机端 `PtpIpServer.PROTO_VERSION` **必须同值**（两端都只是记录 + 打日志，
+         *   不拿它做准入校验，所以哪怕不同版本也能连上；但它表示"谁在跟谁说话"，
+         *   不一致会让人在排障时误判）。
+         */
+        const val PROTO_VERSION = (2 shl 16) or (6 shl 8) or 0
+
+        /**
+         * 把协议版本字段格式化成可读的 `主.次.修订`（打日志用，两端同一算法）。
+         * 修订号为 0 时**省略第三段**：`2.6.0` 印成 `2.6`。
+         */
+        fun formatProtoVersion(v: Int): String {
+            val major = (v ushr 16) and 0xFF
+            val minor = (v ushr 8) and 0xFF
+            val rev = v and 0xFF
+            return if (rev == 0) "$major.$minor" else "$major.$minor.$rev"
+        }
 
         /**
          * 本地唤醒挂起事务的哨兵码。故意取负数：不落在任何 PTP 协议码空间里，

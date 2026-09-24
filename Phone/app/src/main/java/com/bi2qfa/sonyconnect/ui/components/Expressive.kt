@@ -31,10 +31,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItemDefaults
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -50,14 +48,26 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.bi2qfa.sonyconnect.R
 import com.bi2qfa.sonyconnect.ui.theme.CircleTint
 import com.bi2qfa.sonyconnect.ui.theme.Motion
 import com.bi2qfa.sonyconnect.ui.components.MsIcon
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.draw.clip
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.launch
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.clickable
 
 /**
  * **MD3E 组件套件**（照用户给的 Google Wallet 设置页那套语言摆）。
@@ -254,7 +264,7 @@ fun segmentSurfaceColor(): Color =
         .containerColor
 
 /**
- * 组里的一段（**不是行**的内容用它）：色调面 + 分段形状 + 可选整段点击。
+ * 组里的一段（**不是行**的内容用它）：色调面 + 分段形状 + 可选整段点击（可带长按）。
  * 行请用 [SettingsRow]（那边是原生 `ListItem`，还额外带按下变形）。
  */
 @Composable
@@ -264,11 +274,33 @@ fun Segment(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     onClick: (() -> Unit)? = null,
+    /** 长按（可选）。传了它就走 [combinedClickable]，与 [onClick] 共存。 */
+    onLongClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val shape = segmentShape(index, count)
     val color = segmentSurfaceColor()
-    if (onClick != null) {
+    if (onClick != null && onLongClick != null) {
+        // 要长按就不能再用 Surface(onClick)（它只认单击）。这里保持同一块 surface，
+        // 手势换成 combinedClickable；`.clip(shape)` 保证水波纹仍落在**这一段自己的
+        // 形状**里（外圈圆、内圈方）—— 与上面那条注释同一个理由。
+        Surface(
+            modifier = modifier.fillMaxWidth(),
+            shape = shape,
+            color = color,
+        ) {
+            Column(
+                Modifier
+                    .clip(shape)
+                    .combinedClickable(
+                        enabled = enabled,
+                        onClick = onClick,
+                        onLongClick = onLongClick,
+                    ),
+                content = content,
+            )
+        }
+    } else if (onClick != null) {
         // 走 Surface(onClick)：水波纹才会落在**这一段自己的形状**里（外圈圆、内圈方），
         // 挂在外面再加 background 的话水波纹是整块方角，深浅色下都很显眼
         Surface(
@@ -317,6 +349,123 @@ fun GroupCard(
  *   后者让"行 → 圆片 → 图标"的联动对调用点完全透明。
  */
 val LocalRowInteraction = staticCompositionLocalOf<InteractionSource?> { null }
+
+/**
+ * 让**整块区域**都能驱动一个交互源，内容里的 [IconCircle] / MsIcon 取
+ * [LocalRowInteraction] 就能跟着"按键按到哪一块"一起弹。
+ *
+ * <p>为什么需要它：`ExtendedFloatingActionButton` 这类库组件的**交互源拿不到**
+ * （API 上没有这个参数），而图标自己那套自检按下只认**图标自己的边界** ——
+ * 于是"只有精准按在图标上才会变形，按在按钮别处不变形"（用户实测）。
+ * 把按钮包进本组件：这里用 Initial pass 观察**整块区域**的按下（进/出都不消费事件，
+ * 不会抢走按钮自己的点击），把信号转发给一个交互源，再由内容取用。
+ */
+@Composable
+fun WholeAreaPressScope(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    val source = remember { MutableInteractionSource() }
+    val scope = rememberCoroutineScope()
+    // 只在"按下/抬起"的边沿发事件（每帧都发会把收集端刷爆）
+    val active = remember { mutableStateOf<PressInteraction.Press?>(null) }
+    Box(
+        modifier.pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    val e = awaitPointerEvent(PointerEventPass.Initial)
+                    val pressed = e.changes.any { it.pressed }
+                    val pos = e.changes.firstOrNull()?.position ?: Offset.Zero
+                    val cur = active.value
+                    if (pressed && cur == null) {
+                        val ev = PressInteraction.Press(pos)
+                        active.value = ev
+                        scope.launch { source.emit(ev) }
+                    } else if (!pressed && cur != null) {
+                        active.value = null
+                        scope.launch { source.emit(PressInteraction.Release(cur)) }
+                    }
+                }
+            }
+        },
+        contentAlignment = Alignment.Center,
+    ) {
+        CompositionLocalProvider(LocalRowInteraction provides source) { content() }
+    }
+}
+
+/**
+ * MD3E **连体按钮组**（用户定版："会变形的连体按钮组"）：
+ *
+ * - 按钮**肩并肩无缝隙**：未选中的连成一整条底色；
+ * - **选中的那颗形变成完整药丸**（圆角 = 高度一半），其余保持小圆角；
+ * - 切换时**圆角走动画**（spatial 弹簧）——"变形"就来自这里；
+ * - 组**两端**（未选中时）用较大的圆角收口，与选中药丸的轮廓呼应。
+ *
+ * 颜色沿用主题既有语义：选中 = `secondaryContainer` / `onSecondaryContainer`，
+ * 未选中 = `surfaceContainerHighest` / `onSurfaceVariant`（与全应用其它控件一致）。
+ */
+@Composable
+fun ConnectedButtonGroup(
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    height: Dp = 48.dp,
+) {
+    val pillR = height / 2
+    val innerR = SegmentInnerCorner          // 与多段组的接缝同值（4dp）
+    Row(
+        modifier.fillMaxWidth(),
+        // ★ **按钮之间要留缝**（用户实测对照原版："连体按钮都粘连到一起了，人家是有缝的"）。
+        //   量参考图：按钮高 73px、相邻之间约 3px 的缝 → 换算到 48dp 高就是 ~2dp，
+        //   正好等于全应用多段组用的那道缝（[ListItemDefaults.SegmentedGap]）。
+        horizontalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
+    ) {
+        options.forEachIndexed { i, label ->
+            val selected = i == selectedIndex
+            // 圆角规则（照参考图量出来的）：选中 = 完整药丸；组两端（未选中时）也是药丸端；
+            // 组内部贴邻的角用小圆角 —— 配合上面那道缝，就是"有缝的连体"。
+            val targetStart = if (selected || i == 0) pillR else innerR
+            val targetEnd = if (selected || i == options.lastIndex) pillR else innerR
+            val rStart by animateDpAsState(targetStart, Motion.spatialDefault(), label = "cbgS$i")
+            val rEnd by animateDpAsState(targetEnd, Motion.spatialDefault(), label = "cbgE$i")
+            val bg by animateColorAsState(
+                if (selected) MaterialTheme.colorScheme.secondaryContainer
+                else MaterialTheme.colorScheme.surfaceContainerHighest,
+                Motion.fastOutFade(),
+                label = "cbgBg$i",
+            )
+            val fg by animateColorAsState(
+                if (selected) MaterialTheme.colorScheme.onSecondaryContainer
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                Motion.fastOutFade(),
+                label = "cbgFg$i",
+            )
+            val press = remember { MutableInteractionSource() }
+            Box(
+                Modifier
+                    .weight(1f)
+                    .height(height)
+                    .clip(RoundedCornerShape(rStart, rEnd, rEnd, rStart))
+                    .background(bg)
+                    .clickable(
+                        interactionSource = press,
+                        indication = null,
+                        onClick = { onSelect(i) },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    color = fg,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
 
 /**
  * 行首那枚彩色圆片（**带按下反馈**）。
@@ -460,7 +609,15 @@ fun SettingsRow(
                 )
             }
         }
-        trailing?.invoke()
+        // ★ 2.7.0（用户定版）：文本列与尾部控件（开关/箭头）之间**留 16dp 缝** ——
+        //   原来紧贴，副标题一长就顶到开关上（"离开关按钮太近了"）。
+        val t = trailing
+        if (t != null) {
+            Spacer(Modifier.width(16.dp))
+            // 尾部控件（如"当前占用"的刷新圆片）也吃**行的交互源**：
+            // 按到整行/整圆的任意处，里面的图标都要跟着弹
+            CompositionLocalProvider(LocalRowInteraction provides rowInteraction) { t() }
+        }
     }
     val row: @Composable () -> Unit = {
         Row(

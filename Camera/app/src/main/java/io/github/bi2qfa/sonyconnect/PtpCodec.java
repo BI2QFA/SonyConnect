@@ -22,6 +22,12 @@ public final class PtpCodec {
     private PtpCodec() {
     }
 
+    /**
+     * 本应用的版本号字符串（**日志、关于页、探测包厂商标识共用这一处**）。
+     * ★ 升版本时这里 + {@code build.gradle} + {@code AndroidManifest} 一起改。
+     */
+    public static final String APP_VERSION = "2.6";
+
     // ===== 通用包头 =====
     // Length(4, LE, 含包头在内的整包字节数) + Type(4, LE)
     public static final int HEADER_LEN = 8;
@@ -100,6 +106,12 @@ public final class PtpCodec {
     public static final int OP_THUMB_QUEUE_PAUSE = 0x9024;
     public static final int OP_THUMB_QUEUE_RESUME = 0x9025;
     public static final int OP_THUMB_QUEUE_CANCEL = 0x9026;
+    /**
+     * 批量取件（2.6）：一次换一个**批令牌**，随后在同一条数据连接上连续发多张，
+     * 省掉"每张一次控制往返 + 每批一次 TCP 三握"。载荷 = 每行 {@code "T\t<path>"} 或
+     * {@code "P\t<path>"}（T=小缩略图、P=大预览），最多 32 行。
+     */
+    public static final int OP_GET_OBJECT_BATCH = 0x9027;
     // 0x9030 原为 OP_EXIT_APP（手机请相机端退出，用于"传输完成后自动关闭相机端"）。
     // 该功能已按用户要求**两端一起彻底删除**，号段留空不再使用。
     // 相机端的退出只剩**手动**一条路（相机自己选项菜单里的「退出应用程序」）。
@@ -169,8 +181,12 @@ public final class PtpCodec {
     public static final int KIND_PREVIEW = 1;
     public static final int KIND_ORIGINAL = 2;
 
-    /** 厂商友好名标记：带此后缀的探测请求，相机才回扩展应答（保护标准互操作） */
-    public static final String VENDOR_TAG = "SonyConnect/2.0";
+    /**
+     * 厂商友好名标记：带此后缀的探测请求，相机才回扩展应答（保护标准互操作）。
+     * ★ 它是**协议契约**：手机端 {@code PtpCodec.VENDOR_TAG} 必须与本处逐字一致，
+     *   不一致时手机端就"扫不到设备"——改版本号时两端必须一起改、一起装。
+     */
+    public static final String VENDOR_TAG = "SonyConnect/" + APP_VERSION;
 
     // ============================================================
     // 基础字节读写（小端）
@@ -325,6 +341,21 @@ public final class PtpCodec {
     // ============================================================
     // 各类包构造器
     // ============================================================
+
+    /**
+     * 把协议版本字段格式化成可读的 {@code 主.次.修订}（打日志用）。
+     *
+     * 与手机端 {@code PtpIpClient.formatProtoVersion} **同一套算法**：高 8 位主版本、
+     * 次 8 位次版本、低 8 位修订号。2.5.5 因此显示成 {@code 2.5.5} 而不是 {@code 132357}；
+     * 修订号为 0 时**省略第三段**（{@code 2.6.0} 印成 {@code 2.6}）。
+     */
+    public static String formatProtoVersion(int v) {
+        int major = (v >>> 16) & 0xFF;
+        int minor = (v >>> 8) & 0xFF;
+        int rev = v & 0xFF;
+        // 修订号为 0 时省略第三段：2.6.0 印成 "2.6"
+        return rev == 0 ? major + "." + minor : major + "." + minor + "." + rev;
+    }
 
     /** Init Command Request：GUID(16) + FriendlyName + ProtocolVersion(4)。 */
     public static byte[] initCmdReq(byte[] guid, String friendlyName, int protoVer) {

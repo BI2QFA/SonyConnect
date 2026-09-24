@@ -1,7 +1,6 @@
 package com.bi2qfa.sonyconnect.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -27,10 +26,8 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -39,14 +36,11 @@ import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -66,12 +60,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import com.bi2qfa.sonyconnect.R
 import com.bi2qfa.sonyconnect.core.ConnectionCenter
+import androidx.exifinterface.media.ExifInterface
+import com.bi2qfa.sonyconnect.data.LocalPhoto
 import com.bi2qfa.sonyconnect.data.ThumbStore
 import com.bi2qfa.sonyconnect.ptpip.ObjectRepository
 import com.bi2qfa.sonyconnect.transfer.DownloadService
@@ -91,8 +85,6 @@ import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -101,7 +93,25 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.snapshotFlow
+import com.bi2qfa.sonyconnect.ui.components.AppHeader
+import com.bi2qfa.sonyconnect.ui.components.DownloadDirMissingDialog
+import com.bi2qfa.sonyconnect.ui.components.ExifInfoDialog
+import com.bi2qfa.sonyconnect.core.StorageSink
+import com.bi2qfa.sonyconnect.data.SettingsRepo
+import com.bi2qfa.sonyconnect.ui.FloatingNav
+import com.bi2qfa.sonyconnect.ui.NavItemSpec
+import com.bi2qfa.sonyconnect.ui.PhotoRotate
+import androidx.compose.ui.graphics.Brush
+import com.bi2qfa.sonyconnect.ui.components.WholeAreaPressScope
+import com.bi2qfa.sonyconnect.ui.components.LocalRowInteraction
 
 /**
  * 文件页：
@@ -120,6 +130,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 fun FilesScreen(
     onGoTransfers: () -> Unit,
     dirState: androidx.compose.runtime.MutableState<String>,
+    /** 控制中心面板里的两件事：由 MainActivity 透传（预览器里的面板要用）。 */
+    onOpenSettings: () -> Unit = {},
+    onSwitchDevice: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val host = ConnectionCenter.host
@@ -140,6 +153,8 @@ fun FilesScreen(
     var preparing by remember { mutableStateOf(false) }
     var scanProgress by remember { mutableStateOf("") }
     var scanJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    /** 下载目录预检失败（目录被删/权限回收）→ 弹窗，文件一律不入队（用户定版）。 */
+    var dirMissing by remember { mutableStateOf(false) }
 
     // 全屏预览
     var fullscreenEntry by remember { mutableStateOf<ObjectRepository.FtpEntry?>(null) }
@@ -256,25 +271,51 @@ fun FilesScreen(
         preparing = true
         scanProgress = "正在扫描…"
         scanJob = scope.launch {
+            // ★ 下载目录预检（用户定版：点"开始传输"那一刻就查，不存在则弹窗、
+            //   文件一律不进传输队列）：SAF query 是阻塞调用，放 IO 线程。
+            val dirOk = withContext(Dispatchers.IO) {
+                StorageSink.downloadDirAvailable(context, SettingsRepo.downloadTreeUri)
+            }
+            if (!dirOk) {
+                preparing = false
+                scanJob = null
+                scanProgress = ""
+                dirMissing = true
+                return@launch
+            }
+            // 待扫描清单先在本线程（主线程）拍快照：扫描要挪到 IO 线程去做，
+            // 那边不能再读这两个 Compose 状态列表。
+            val entriesSnapshot = entries.toList()
+            val selectedSnapshot = selected.toList()
             try {
-                collectAndEnqueue(
-                    host = activeHost,
-                    entries = entries,
-                    selected = selected.toList(),
-                    enqueue = { batch ->
-                        TransferStore.enqueueAll(batch.map {
-                            TransferItem(
-                                id = it.path, name = it.name, path = it.path,
-                                size = it.size, mtime = it.timestamp,
-                            )
-                        })
-                    },
-                    onProgress = { dirs, found ->
-                        withContext(Dispatchers.Main) {
-                            scanProgress = "已扫描 $dirs 个目录 · 已加入 $found 个文件"
-                        }
-                    },
-                )
+                // ★ 网络扫描必须离开主线程：listPage() 是同步阻塞调用（内部在
+                //   ioExecutor 上等结果），选中含子目录的条目时这里会在主线程跑
+                //   几十上百次网络往返 —— 界面完全冻结（连进度条和取消按钮都画不
+                //   出来），目录一大就直接 ANR。2.0 是在 Dispatchers.IO 里收集的，
+                //   2.5 重写成"分批 + 进度 + 可取消"时把这层上下文丢了。
+                withContext(Dispatchers.IO) {
+                    collectAndEnqueue(
+                        host = activeHost,
+                        entries = entriesSnapshot,
+                        selected = selectedSnapshot,
+                        enqueue = { batch ->
+                            val items = batch.map {
+                                TransferItem(
+                                    id = it.path, name = it.name, path = it.path,
+                                    size = it.size, mtime = it.timestamp,
+                                )
+                            }
+                            // 入队改的是 Compose 状态 → 回到主线程写
+                            withContext(Dispatchers.Main) { TransferStore.enqueueAll(items) }
+                        },
+                        onProgress = { dirs, found ->
+                            withContext(Dispatchers.Main) {
+                                scanProgress = "已扫描 $dirs 个目录 · 已加入 $found 个文件"
+                            }
+                        },
+                    )
+                }
+                // 以下是 UI 收尾（改状态 + 跳页），回到主线程后执行
                 preparing = false
                 scanJob = null
                 scanProgress = ""
@@ -469,6 +510,11 @@ fun FilesScreen(
                             selecting = selecting,
                             isSelected = selected.contains(entry.path),
                             onToggle = { toggle(entry.path) },
+                            // 选择模式下的双击 = 看大图（只是看，不改选中集合）；
+                            // 文件夹/非图片双击无预览意义，不响应
+                            onDoubleClick = {
+                                if (!entry.isDir && entry.ext in PREVIEWABLE_EXT) fullscreenEntry = entry
+                            },
                             onLongClick = { longPress(entry.path) },
                             onClick = {
                                 if (entry.isDir) dir = entry.path
@@ -519,6 +565,10 @@ fun FilesScreen(
                             selecting = selecting,
                             isSelected = selected.contains(entry.path),
                             onToggleSelect = { toggle(entry.path) },
+                            // 与九宫格同款：选择模式下双击 = 看大图（文件夹不响应）
+                            onDoubleClick = {
+                                if (!entry.isDir && entry.ext in PREVIEWABLE_EXT) fullscreenEntry = entry
+                            },
                             onClick = {
                                 if (entry.isDir) dir = entry.path
                                 else if (entry.ext in setOf("jpg", "jpeg", "arw"))
@@ -546,24 +596,30 @@ fun FilesScreen(
                 targetScale = 0.7f,
             ) + fadeOut(Motion.effectsFast()),
         ) {
-            ExtendedFloatingActionButton(
-                onClick = { startTransfer() },
+            // ★ 整颗按钮都能驱动图标的按下变形（用户实测："只有精准按到图标才变形"）：
+            //   FAB 拿不到库的交互源，所以由这个壳用 Initial pass 观察**整块区域**，
+            //   再把信号经 LocalRowInteraction 递给图标。
+            WholeAreaPressScope(
                 modifier = Modifier
-                    .padding(20.dp)
-                    // 同上：别被悬浮导航的圆形按钮压住
-                    .padding(bottom = FloatingNavInset),
+                    // ★ 与传输页的"开始传输"**同一个高度**（用户定版："两个传输按钮
+                    //   都改成在文件页的高度基础上降低一点"）。基准 = 文件页原来的
+                    //   20 + FloatingNavInset(112)，这里去掉那 20 再降 12 → 100dp。
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = FloatingNavInset - 12.dp),
             ) {
-                if (preparing) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                } else {
-                    // FAB 拿不到交互源（见 TransfersScreen 同一处的说明），图标自己检测按下
-                    MsIcon(
-                        icon = MsIcon.START,
-                        contentDescription = null,
-                    )
+                ExtendedFloatingActionButton(onClick = { startTransfer() }) {
+                    if (preparing) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        MsIcon(
+                            icon = MsIcon.START,
+                            contentDescription = null,
+                            interactionSource = LocalRowInteraction.current,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text("开始传输 (${selected.size})")
                 }
-                Spacer(Modifier.width(8.dp))
-                Text("开始传输 (${selected.size})")
             }
         }
     }
@@ -582,7 +638,11 @@ fun FilesScreen(
             onDismissRequest = { fullscreenEntry = null },
             // usePlatformDefaultWidth=false：默认弹窗左右各留边距，
             // 那种宽度下 Pager 的翻页手势会显得很局促，图片也看不全
-            properties = DialogProperties(usePlatformDefaultWidth = false),
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                // 铺满整屏（含状态栏/手势栏区域）→ 预览页真正沉浸
+                decorFitsSystemWindows = false,
+            ),
         ) {
             FullscreenPreview(
                 gallery = gallery,
@@ -595,8 +655,34 @@ fun FilesScreen(
                     toggle(p)
                 },
                 onDismiss = { fullscreenEntry = null },
+                onOpenSettings = onOpenSettings,
+                onSwitchDevice = onSwitchDevice,
             )
         }
+    }
+
+    // ★ 用户定版：弹窗的"选择目录"**直接拉起系统目录选择器**（不再绕设置页）
+    val treePicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }
+            SettingsRepo.updateDownloadTreeUri(uri.toString())
+        }
+    }
+    // 下载目录不可用：弹窗提示 + 给一条"去设置"的路（文件已在预检处拦下，未入队）
+    if (dirMissing) {
+        DownloadDirMissingDialog(
+            dirLabel = SettingsRepo.downloadDirLabel(),
+            onPickDir = { treePicker.launch(null) },
+            onDismiss = { dirMissing = false },
+        )
     }
 }
 
@@ -612,7 +698,8 @@ private suspend fun collectAndEnqueue(
     host: String,
     entries: List<ObjectRepository.FtpEntry>,
     selected: List<String>,
-    enqueue: (List<ObjectRepository.FtpEntry>) -> Unit,
+    /** suspend：调用方要把入队（改 Compose 状态）切回主线程，见 [startTransfer]。 */
+    enqueue: suspend (List<ObjectRepository.FtpEntry>) -> Unit,
     onProgress: suspend (Int, Int) -> Unit,
 ) {
     data class DirTask(val path: String, val depth: Int)
@@ -680,6 +767,7 @@ private fun EntryRow(
     isSelected: Boolean,
     onToggleSelect: () -> Unit,
     onClick: () -> Unit,
+    onDoubleClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
     val selected = selecting && isSelected
@@ -695,11 +783,18 @@ private fun EntryRow(
                 if (selected) MaterialTheme.colorScheme.secondaryContainer
                 else segmentSurfaceColor()
             )
-            // ★ 选择模式下点行 = 选中/取消（与九宫格同一语义）：对勾删掉后这是唯一的切换入口
+            // ★ 选择模式下点行 = 选中/取消（与九宫格同一语义）：对勾删掉后这是唯一的切换入口。
+            //   **瞬时回调**：不传 onDoubleClick —— 传了单击会被压后到双击窗口结束才触发、
+            //   手感发肉（用户实测"单击反应迟钝"）；双击交给下面的旁路检测器（单击零延迟）。
             .combinedClickable(
                 onClick = if (selecting) onToggleSelect else onClick,
                 onLongClick = onLongClick,
             )
+            // ★ 选择模式下**双击 = 打开大图预览**（用户定版：两种视图都要）。
+            //   旁路观察（Initial pass、不消费事件）：单击照旧瞬时触发（选择模式下两次
+            //   toggle 对称抵消，选中集合净不变），只在"同一项两次点击落在双击窗口内"时
+            //   补发一次 onDoubleClick。见 [doubleTapDetector]。
+            .doubleTapDetector(enabled = selecting, onDoubleTap = onDoubleClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -739,6 +834,7 @@ private fun GridCell(
     selecting: Boolean,
     isSelected: Boolean,
     onToggle: () -> Unit,
+    onDoubleClick: () -> Unit,
     onLongClick: () -> Unit,
     onClick: () -> Unit,
 ) {
@@ -751,10 +847,15 @@ private fun GridCell(
             //   形状直接取 CardDefaults.shape，避免两处各写一个半径日后漂移。
             .clip(CardDefaults.shape)
             // 单击：选择模式下切换选中，普通模式打开；长按任何视图下都进选择模式
+            // （单击**瞬时**触发：双击不再走 combinedClickable 的 onDoubleClick ——
+            //   传了它单击要被压到双击窗口结束，手感发肉）
             .combinedClickable(
                 onClick = if (selecting) onToggle else onClick,
                 onLongClick = onLongClick,
-            ),
+            )
+            // ★ 选择模式下**双击 = 打开大图预览**（用户定版：九宫格与列表都要）：
+            //   同 EntryRow，由 [doubleTapDetector] 旁路检测（观察不消费，单击零延迟）。
+            .doubleTapDetector(enabled = selecting, onDoubleTap = onDoubleClick),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(
             // 选中时整张卡片换底色：九宫格里缩略图占满，只靠右上角那枚对号不够显眼
@@ -784,6 +885,10 @@ private fun GridCell(
                         mtime = entry.timestamp,
                     )
                 } else null
+                // ★ 2.7.0 需求 7：订阅"某张图的方向已从大预览 sidecar 学到"的信号 ——
+                //   方向是解码时施加的（内存缓存不是可观察状态），epoch 一变这格重画，
+                //   小缩略图跟着大预览一起转正。
+                ThumbStore.orientationEpoch
                 val bmp = cacheKey?.let { ThumbStore.smallThumb(it) }
                 val st = cacheKey?.let { ThumbStore.states[it.token] }
                 // 内缩 6dp + 小圆角裁剪：高亮（选中底色）在图片四周露出一整圈
@@ -845,6 +950,58 @@ private fun GridCell(
 }
 
 /**
+ * ★ 选择模式下**双击 = 打开大图预览**的旁路检测器（用户定版"单击零延迟 + 双击可识别"）。
+ *
+ * 为什么不用 combinedClickable 自带的 onDoubleClick：传了它，库为了区分单/双击会把
+ * 单击也压后到双击窗口结束才回调（~300ms 发肉，用户实测"单击反应比较迟钝"）。
+ * 为什么不再叠一层 detectTapGestures（v1 教训）：它在 Main pass 一上来就消费 down 事件，
+ * 外层 combinedClickable 的单击/长按整组被吃掉（用户实测"单击长按失灵"）。
+ *
+ * 本检测器只挂在 Initial pass（事件分发的第一站、先于所有正式手势处理）**观察**事件，
+ * 从不调用 consume() —— 事件原样流过，单击/长按的既有链路零影响；自己数
+ * "同一项、两次短促点击（位移 < touchSlop、时长 < 长按阈值）、抬起间隔落在系统双击
+ * 窗口内"时补发一次 onDoubleTap。
+ * 双击的两次单击各自 toggle 一次、对称抵消 —— 语义 = "只是看一眼大图，不改选中集合"；
+ * 代价是双击时高亮会闪一下（"单击零延迟 + 双击可识别"的固有取舍，桌面文件管理器同款）。
+ */
+private fun Modifier.doubleTapDetector(
+    enabled: Boolean,
+    onDoubleTap: () -> Unit,
+): Modifier = this.pointerInput(enabled) {
+    if (!enabled) return@pointerInput
+    val doubleTapMs = viewConfiguration.doubleTapTimeoutMillis
+    val longPressMs = viewConfiguration.longPressTimeoutMillis
+    val slop = viewConfiguration.touchSlop
+    awaitPointerEventScope {
+        var lastTapUp = 0L
+        var downAt = 0L
+        var downPos = Offset.Zero
+        var moved = false
+        var down = false
+        while (true) {
+            val e = awaitPointerEvent(PointerEventPass.Initial)   // 只观察、绝不消费
+            if (e.changes.size != 1) { down = false; continue }   // 多指：不判定
+            val c = e.changes[0]
+            if (c.pressed && !down) {
+                down = true; downAt = c.uptimeMillis; downPos = c.position; moved = false
+            } else if (down && c.pressed && (c.position - downPos).getDistance() > slop) {
+                moved = true
+            }
+            if (!c.pressed && down) {
+                down = false
+                val isTap = !moved && c.uptimeMillis - downAt < longPressMs
+                if (isTap) {
+                    if (lastTapUp != 0L && c.uptimeMillis - lastTapUp <= doubleTapMs) {
+                        lastTapUp = 0L
+                        onDoubleTap()
+                    } else lastTapUp = c.uptimeMillis
+                } else lastTapUp = 0L
+            }
+        }
+    }
+}
+
+/**
  * 网格里"没有缩略图"的那块面：与图片**同一个尺寸**（整格上半部），只是换成中性底 +
  * 居中的字形。
  *
@@ -888,6 +1045,8 @@ private fun ThumbOrPlaceholder(entry: ObjectRepository.FtpEntry, size: Int) {
             mtime = entry.timestamp,
         )
     } else null
+    // ★ 2.7.0 需求 7：订阅"方向已从大预览 sidecar 学到"的信号（同 GridCell 内的说明）
+    ThumbStore.orientationEpoch
     val bmp = cacheKey?.let { ThumbStore.smallThumb(it) }
     val st = cacheKey?.let { ThumbStore.states[it.token] }
     Box(
@@ -961,6 +1120,9 @@ private fun FullscreenPreview(
     isSelected: (String) -> Boolean,
     onToggleSelect: (String) -> Unit,
     onDismiss: () -> Unit,
+    /** 控制中心面板里的两件事（由 MainActivity 一路透传进来）。 */
+    onOpenSettings: () -> Unit = {},
+    onSwitchDevice: (String) -> Unit = {},
 ) {
     val pagerState = rememberPagerState(initialPage = startIndex) { gallery.size }
 
@@ -972,9 +1134,36 @@ private fun FullscreenPreview(
     // 1x 才让 Pager 能滑（放大后横向拖动归平移，见上面的分工表）
     val atBaseScale = scale <= 1.001f
 
+    // 用户点了"旋转"的次数（**每张图各自记**）：预览页的左下角按钮每次 +1，
+    // 页面据此逆时针转 90°。用 path 当键，翻页回来仍保持用户转过角度。
+    val rotationByPath = remember { mutableStateMapOf<String, Int>() }
+
+    // 某张图**已经转完几段**（由预览页在每段烘焙后回报）。按钮据此限流：
+    // **最多允许"正在播的那一段 + 一段待播"**（用户定版：最多再多转一段）——
+    // 连点三下净效果是转两下（180°），连点十下也只有两下，停止点击后不会再有积压。
+    //
+    // ★ 限流必须落在**点击那一刻**（本表由页面回报）。放在旋转协程里用 snapshotFlow
+    //   收点击是来不及的：流是异步投递的，等它送到，那段动画已经播完、"忙"判成了
+    //   "闲"，于是多出来的点击又会被播出来 —— 限流等于没做。
+    val bakedByPath = remember { mutableStateMapOf<String, Int>() }
+
+    /** "照片信息"弹窗开关（2.7.0 需求 3：底部导航"旋转 — 照片信息 — 选择"中间那颗）。 */
     var infoOpen by remember { mutableStateOf(false) }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    // ★ 版式与主界面同构（用户定版"预览器背景色和主界面一致"）：
+    //   surface 底 + AppHeader 在**内容之上**（不再压在照片上，也就不需要顶部压暗渐变）+
+    //   照片区独立 + 底部悬浮导航盖在内容上（与主界面"栏浮在内容之上"的模型一致）。
+    // 当前这一张（顶部文案与底部两个动作都用它）
+    val current = gallery.getOrNull(pagerState.currentPage)
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface),
+    ) {
+        // 照片铺满整屏（标题与导航浮在它上面）→ 在整屏里居中，
+        // 而不是被顶部标题挤到下半屏（用户实测："预览图高度位置应该居中"）
+        Box(Modifier.fillMaxSize()) {
+        // （照片区就是整屏，见上面外层 Box 的说明）
         HorizontalPager(
             state = pagerState,
             modifier = Modifier.fillMaxSize(),
@@ -988,170 +1177,82 @@ private fun FullscreenPreview(
                     offset = if (page == pagerState.currentPage) offset else Offset.Zero,
                     onScale = { if (page == pagerState.currentPage) scale = it },
                     onOffset = { if (page == pagerState.currentPage) offset = it },
+                    turnsOf = { rotationByPath[entry.path] ?: 0 },
+                    onBaked = { n -> bakedByPath[entry.path] = n },
                 )
             }
         }
 
-        // ===== 顶部：返回键 + 照片名（大）/ 拍摄时间 · 序号（小） =====
-        Row(
+        // ===== 顶部：标题浮层（照片满屏，垫一层压暗渐变保证白字可读）=====
+        Column(
             Modifier
                 .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(start = 4.dp, end = 16.dp, top = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onDismiss) {
-                MsIcon(
-                    icon = MsIcon.ARROW_BACK,
-                    contentDescription = "返回",
-                    tint = Color.White,
-                )
-            }
-            Spacer(Modifier.width(6.dp))
-            val current = gallery.getOrNull(pagerState.currentPage)
-            Column(Modifier.weight(1f)) {
-                Text(
-                    current?.name ?: "",
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (current != null) {
-                    val date = formatTime(current.timestamp)
-                    val seq = "${pagerState.currentPage + 1}/${gallery.size}"
-                    Text(
-                        // 序号跟在日期后面（用户定版："30/35" 写在小标题的日期后）
-                        if (date.isNotBlank()) "$date · $seq" else seq,
-                        color = Color.White.copy(alpha = 0.7f),
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
-
-        // ===== 底部：左 = 照片信息（EXIF）；右 = 选中 =====
-        val current = gallery.getOrNull(pagerState.currentPage)
-        Row(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 20.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            FilledIconButton(
-                onClick = { infoOpen = true },
-                modifier = Modifier.size(48.dp),
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = Color.Black.copy(alpha = 0.45f),
-                    contentColor = Color.White,
-                ),
-            ) {
-                MsIcon(
-                    icon = MsIcon.INFO,
-                    contentDescription = "照片信息",
-                    tint = Color.White,
-                )
-            }
-            if (current != null) {
-                val sel = isSelected(current.path)
-                FilledIconButton(
-                    onClick = { onToggleSelect(current.path) },
-                    modifier = Modifier.size(48.dp),
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = if (sel) MaterialTheme.colorScheme.primary
-                        else Color.Black.copy(alpha = 0.45f),
-                        contentColor = if (sel) MaterialTheme.colorScheme.onPrimary
-                        else Color.White,
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Black.copy(alpha = 0.55f),
+                        1f to Color.Transparent,
                     ),
-                ) {
-                    MsIcon(
-                        icon = MsIcon.CHECK,
-                        contentDescription = if (sel) "取消选中" else "选中",
-                        tint = if (sel) MaterialTheme.colorScheme.onPrimary else Color.White,
-                    )
-                }
-            }
+                ),
+        ) {
+        AppHeader(
+            title = gallery.getOrNull(pagerState.currentPage)?.name ?: "",
+            subtitle = gallery.getOrNull(pagerState.currentPage)?.let { e ->
+                val date = formatTime(e.timestamp)
+                val seq = "${pagerState.currentPage + 1}/${gallery.size}"
+                if (date.isNotBlank()) "$date · $seq" else seq
+            },
+            onBack = onDismiss,
+        )
         }
-    }
 
-    if (infoOpen) {
-        gallery.getOrNull(pagerState.currentPage)?.let { current ->
-            PhotoInfoDialog(entry = current, onDismiss = { infoOpen = false })
+        // ===== 底部：**与主界面同一套悬浮导航**（用户定版）=====
+        //   · 药丸里放两个动作按钮（旋转 90° / 选择），条目数少了，药丸宽度自然变短；
+        //   · 小球与控制中心面板**整块复用主界面那一套**（同一套动画与功能）；
+        //   · 药丸 + 小球作为**一个整体在横轴上居中**、高度与主界面相同 —— 这些都由
+        //     FloatingNav 自己的布局负责，这里只是把动作传进去。
+        val sel = current != null && isSelected(current.path)
+        FloatingNav(
+            modifier = Modifier.align(Alignment.BottomCenter),
+            // 面板里的"设置 / 切换设备"由 MainActivity 透传进来（用户定版：预览器里也要能用）
+            onOpenSettings = onOpenSettings,
+            onSwitchDevice = onSwitchDevice,
+            actions = listOf(
+                NavItemSpec(MsIcon.ROTATE_CCW, "旋转", false) {
+                    val p = current ?: return@NavItemSpec
+                    val requested = rotationByPath[p.path] ?: 0
+                    val done = bakedByPath[p.path] ?: 0
+                    // 排队深度上限 2（正在播的那段 + 至多一段待播），再多来的点击丢弃
+                    if (requested - done >= 2) return@NavItemSpec
+                    rotationByPath[p.path] = requested + 1
+                    offset = Offset.Zero          // 转完可用区域变了，平移归零
+                },
+                // ★ 2.7.0 需求 3（用户定版）：EXIF 按钮放在"旋转"与"选择"**之间**
+                NavItemSpec(MsIcon.INFO, "照片信息", false) { infoOpen = true },
+                NavItemSpec(MsIcon.CHECK, if (sel) "取消选中" else "选择", sel) {
+                    current?.let { onToggleSelect(it.path) }
+                },
+            ),
+        )
+
+        // ★ 2.7.0 需求 3：照片信息弹窗（数据源 = 随大预览传回并缓存的 sidecar EXIF）
+        if (infoOpen && current != null) {
+            CameraExifDialog(entry = current, onDismiss = { infoOpen = false })
+        }
         }
     }
 }
 
-/**
- * 照片信息弹窗：文件名 / 拍摄时间 / 大小 / 分辨率 + 预览图 EXIF 里能读到的拍摄参数
- * （机型 / 快门 / 光圈 / ISO / 焦距 —— 相机端生成的预览图带什么就显示什么，没有的行不出）。
- */
-@Composable
-private fun PhotoInfoDialog(entry: ObjectRepository.FtpEntry, onDismiss: () -> Unit) {
-    val key = ThumbStore.ObjectCacheKey(
-        cameraGuid = ConnectionCenter.camera?.guidHex.orEmpty(),
-        path = entry.path,
-        size = entry.size,
-        mtime = entry.timestamp,
-    )
-    var meta by remember(key) { mutableStateOf<ThumbStore.PreviewMeta?>(null) }
-    LaunchedEffect(key) {
-        meta = withContext(Dispatchers.IO) { ThumbStore.previewMeta(key) }
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        title = { Text("照片信息") },
-        text = {
-            Column(
-                Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                val rows = buildList {
-                    add("文件名" to entry.name)
-                    val date = formatTime(entry.timestamp)
-                    if (date.isNotBlank()) add("拍摄时间" to date)
-                    if (entry.size > 0) add("文件大小" to formatSize(entry.size))
-                    meta?.let { m ->
-                        if (m.width > 0) add("分辨率" to "${m.width} × ${m.height}")
-                        addAll(m.exif.toList())
-                    }
-                }
-                rows.forEach { (label, value) ->
-                    Row {
-                        Text(
-                            label,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.width(88.dp),
-                        )
-                        Text(
-                            value,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("关闭") }
-        },
-    )
-}
 
 /**
- * 预览里的一张：拉图 + 缩放平移 + 手势。
+ * 预览里的一张：拉图 + 缩放平移 + 手势 + 旋转。
  *
- * 拆成单独的 composable 是为了让"每张图自己的缩放状态"天然隔离
+ * 拆成单独的 composable 是为了让"每张图自己的缩放/旋转状态"天然隔离
  * （父层按页码给状态，这里只负责渲染与手势），也避免 Pager 预取相邻页时
  * 把当前页的手势状态搅在一起。
+ *
+ * @param turnsOf **现读**"这张图已被点了几次旋转"（父层累加）。传回调而不是值：
+ *   旋转队列要用 snapshotFlow 观察它，参数位置传进来的普通 Int 是快照之外的拷贝。
+ * @param onBaked 每转完一段回报一次段数，父层的按钮据此限制排队深度。
  */
 @Composable
 private fun PreviewPage(
@@ -1160,6 +1261,8 @@ private fun PreviewPage(
     offset: Offset,
     onScale: (Float) -> Unit,
     onOffset: (Offset) -> Unit,
+    turnsOf: () -> Int = { 0 },
+    onBaked: (Int) -> Unit = {},
 ) {
     val key = ThumbStore.ObjectCacheKey(
         cameraGuid = ConnectionCenter.camera?.guidHex.orEmpty(),
@@ -1169,13 +1272,50 @@ private fun PreviewPage(
     )
     var bmp by remember(key) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
     var failed by remember(key) { mutableStateOf(false) }
+    /** 这张图**已经转过几段**（绝对次数，父层按钮的限流依据）。 */
+    var baked by remember(entry.path) { mutableIntStateOf(0) }
+
     LaunchedEffect(key) {
         val b = withContext(Dispatchers.IO) { ThumbStore.fetchPreviewBlocking(key) }
-        if (b != null) bmp = b else failed = true
+        if (b == null) {
+            failed = true
+            return@LaunchedEffect
+        }
+        // 首帧把"已经点过的旋转"**瞬时**补上（不播动画）：翻页回来或重新打开时，
+        // 图应该是你上次离开时的朝向，而不是自己当着你面转几圈。
+        // ★ 先算好位图、把 baked 落定、回报给父层，**最后**才赋 bmp —— 旋转协程是靠
+        //   "bmp 从无到有"被唤醒的，必须等这些状态都就位再放它跑。
+        val already = turnsOf()
+        val loaded = PhotoRotate.rotateSteps(b, already)
+        baked = already
+        onBaked(already)
+        bmp = loaded
     }
 
     // 容器尺寸：夹紧平移要用它（把图片拖出屏幕就找不回来了）
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // ===== 旋转：常驻协程一段段消化（不打断当前动画；排队深度由父层按钮限流）=====
+    val anim = remember(entry.path) { Animatable(0f) }
+    LaunchedEffect(entry.path) {
+        // 观察"点击总数 + 图到位了没"这一整体：图从无到有也会重新发射，
+        // 于是拉图期间点的那一下不会被吞（那时 bmp 还是 null，转不了，等图到了再播）。
+        snapshotFlow { turnsOf() to (bmp != null) }.collect { (target, ready) ->
+            if (!ready) return@collect
+            while (baked < target) {
+                val cur = bmp ?: break
+                anim.snapTo(0f)
+                anim.animateTo(
+                    PhotoRotate.STEP_DEG,
+                    tween(durationMillis = PhotoRotate.STEP_MS, easing = FastOutSlowInEasing),
+                )
+                bmp = PhotoRotate.rotate(cur, PhotoRotate.STEP_DEG)
+                baked += 1
+                onBaked(baked)
+                anim.snapTo(0f)          // 与烘焙后的朝向等价，无缝
+            }
+        }
+    }
 
     // ★★ 手势回调必须读"当下值"（用户实测两个 bug 的共同病根）：
     //   `pointerInput(Unit)` 与 `rememberTransformableState` 的 lambda 都只组合一次，
@@ -1229,10 +1369,14 @@ private fun PreviewPage(
             // ★ 用 graphicsLayer 而不是 Modifier.scale：这两个变换都在**绘制阶段**生效，
             //   不触发布局 —— 缩放跟手才不会卡。
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                // 旋转中的**连续适配**：角度变了，能塞下它的尺寸也跟着变
+                // （不然会在烘焙那一刻突然跳一下尺寸，见 PhotoRotate 的说明）
+                val rotFit = PhotoRotate.fit(bmp, boxSize, anim.value)
+                scaleX = scale * rotFit
+                scaleY = scale * rotFit
                 translationX = offset.x
                 translationY = offset.y
+                rotationZ = anim.value
             },
         contentAlignment = Alignment.Center,
     ) {
@@ -1243,7 +1387,6 @@ private fun PreviewPage(
                 contentDescription = entry.name,
                 modifier = Modifier.fillMaxSize(),
                 // Fit：整图可见优先。放大靠手势，不靠 contentScale
-                // （预览图是 1616×1080，屏幕放得下；用 FillBounds 会先裁掉一部分）
                 contentScale = ContentScale.Fit,
             )
             failed -> Text("无法获取预览", color = MaterialTheme.colorScheme.error)
@@ -1252,8 +1395,54 @@ private fun PreviewPage(
     }
 }
 
+/**
+ * 相机照片的"照片信息"弹窗（2.7.0 需求 3）。
+ *
+ * 版式与传输页本地查看器**共用 [ExifInfoDialog]**、行构建**共用
+ * [LocalPhoto.buildExifRows]** —— 两处显示一致由共用代码保证（用户定版）。
+ * 数据源与本地查看器不同：EXIF 来自随大预览一并传输并缓存的 sidecar
+ * （[ThumbStore.readExifJson]；相机端按《EXIF读取专项文档》从文件头 64KB 解析）。
+ */
+@Composable
+private fun CameraExifDialog(entry: ObjectRepository.FtpEntry, onDismiss: () -> Unit) {
+    val key = ThumbStore.ObjectCacheKey(
+        cameraGuid = ConnectionCenter.camera?.guidHex.orEmpty(),
+        path = entry.path,
+        size = entry.size,
+        mtime = entry.timestamp,
+    )
+    var rows by remember(key) { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+    LaunchedEffect(key) {
+        rows = withContext(Dispatchers.IO) {
+            val json = runCatching {
+                org.json.JSONObject(ThumbStore.readExifJson(key) ?: "{}")
+            }.getOrNull()
+            LocalPhoto.buildExifRows(entry.name) { tag ->
+                json?.optString(EXIF_JSON_KEY[tag] ?: "")?.takeIf { it.isNotBlank() }
+            }
+        }
+    }
+    ExifInfoDialog(rows = rows, onDismiss = onDismiss)
+}
+
+/**
+ * 相机端 sidecar 的短键 ↔ ExifInterface 标签名（[LocalPhoto.buildExifRows] 的查找键）。
+ * "o"（方向）不进弹窗，只供大预览与小图自动转正。
+ */
+private val EXIF_JSON_KEY = mapOf(
+    ExifInterface.TAG_DATETIME_ORIGINAL to "dt",
+    ExifInterface.TAG_MODEL to "m",
+    ExifInterface.TAG_LENS_MODEL to "lens",
+    ExifInterface.TAG_FOCAL_LENGTH to "fl",
+    ExifInterface.TAG_F_NUMBER to "fn",
+    ExifInterface.TAG_EXPOSURE_TIME to "et",
+    ExifInterface.TAG_EXPOSURE_BIAS_VALUE to "ev",
+    ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY to "iso",
+)
+
 /** 可全屏预览的扩展名（与进入预览时的判断同一套，别再写第二份）。 */
 private val PREVIEWABLE_EXT = setOf("jpg", "jpeg", "arw")
+
 
 /** 双击放大到的倍数。2.5 是"看清细节"与"不至于迷路"之间的常用值。 */
 private const val DOUBLE_TAP_SCALE = 2.5f

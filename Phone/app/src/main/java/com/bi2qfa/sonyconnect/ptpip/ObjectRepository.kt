@@ -2,6 +2,7 @@ package com.bi2qfa.sonyconnect.ptpip
 
 import android.net.Network
 import android.util.Log
+import com.bi2qfa.sonyconnect.data.IdentityRepo
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -15,9 +16,9 @@ import java.util.concurrent.Executors
 /**
  * 对象访问层（PTP/IP 版）—— **取代 `ftp/FtpRepository`**。
  *
- * 对外 API 形状刻意与 FTP 版保持一致（`FtpEntry` / `list` / `fetchVirtualThumb` /
- * `fetchVirtualPreview` / `PumpResult` / `pumpToStream` / `joinPath` / `parentOf` /
- * `breadcrumbOf`），使 UI 与下载服务只需把 `FtpRepository.` 换成 `ObjectRepository.`，
+ * 对外 API 形状刻意与 FTP 版保持一致（`FtpEntry` / `list` / `fetchVirtualPreview` /
+ * `PumpResult` / `pumpToStream` / `joinPath` / `parentOf` / `breadcrumbOf`），
+ * 使 UI 与下载服务只需把 `FtpRepository.` 换成 `ObjectRepository.`，
  * 再补一个 `connect(...)` 的相机参数即可迁移。
  *
  * 内部机制：
@@ -52,10 +53,6 @@ object ObjectRepository {
     /** 控制面请求超时；缩略图队列等慢操作另计。 */
     private const val IO_TIMEOUT_MS = 30_000
 
-    /** 虚拟路径前缀（沿用 FTP 版语义，仅作缓存键与日志标识，不再走真实路径）。 */
-    const val VIRTUAL_THUMB_PREFIX = "/.sonyconnect/th"
-    const val VIRTUAL_PREVIEW_PREFIX = "/.sonyconnect/pv"
-
     /**
      * 手机连相机热点（无互联网标记）时，不绑定就可能把流量甩到蜂窝。
      * 由 ConnectionCenter 在连上前写入，等价于 FTP 版 `boundNetwork`。
@@ -82,9 +79,9 @@ object ObjectRepository {
      *   —— 因为 `list()` 一直排在对象后面（用户实测反馈"传输文件时点击文件页面无法加载
      *   文件"）。分开之后控制面永远有空，传输期间目录照读、心跳照跳。
      *
-     * ★ 数据面自己仍保持**单线程**：相机那侧一次只撑得住一条数据连接（`serveFile` 要求
-     *   找得到同设备的控制会话并独占一个传输句柄），而且带宽本来就该给传输独占
-     *   —— 相机端的缩略图预取也是为此刻意暂停的。
+     * ★ 数据面自己仍保持**单线程**：[pumpToStream]（ORIGINAL 大文件续传）在这条
+     *   线程上跑 —— 它要"stat 校验 + 换令牌 + 落盘"三步同拍，串行是正确性要求。
+     *   （取预览/小图的令牌**不走**这里，见 [openObjectTicket] 的说明。）
      */
     private val xferExecutor: ExecutorService = Executors.newSingleThreadExecutor { r ->
         Thread(r, "PtpIpXfer").apply { isDaemon = true }
@@ -189,6 +186,9 @@ object ObjectRepository {
         sessions[host]?.let { if (it.client.isConnected) return ConnectOutcome.OK else disconnect(host) }
         return try {
             ioExecutor.submit<ConnectOutcome> {
+                // 协议代次（握手报给相机的那个版本号）：排障时一眼能看出是哪一版在说话
+                Log.d(TAG, "连接 " + host + "：本机协议版本=" +
+                    PtpIpClient.formatProtoVersion(PtpIpClient.PROTO_VERSION))
                 val client = PtpIpClient(
                     host = host,
                     protoPort = protoPort,
@@ -249,13 +249,39 @@ object ObjectRepository {
     // 必须把连接**留着**，等用户看完相机屏再发第二步。这个"留着的连接"就是
     // pairingLink 指向的那条 client。
 
-    /** 进行中的配对连接（已发 PAIR_BEGIN、等用户输码）。 */
+    /**
+     * 进行中的配对连接（已发 PAIR_BEGIN、等用户输码）。
+     *
+     * <p>读写跨线程：`pairBegin` 在 ioExecutor 上写、`pairAbort` 在调用方线程上
+     * **取走**、`pairExchange` 在调用方线程上读。所以引用本身 @Volatile，并且
+     * 所有"读引用 / 置空"都用 [pairingLock] 包成原子操作 —— 否则
+     * `pairAbort` 与 `pairBegin` 交错时会漏掉刚建好的那条连接（连接没人管、
+     * 相机端配对窗口一直被占），或者 abort 帧与 exchange 帧在同一条连接上交错。
+     * **锁内只做引用赋值/取值，绝不做网络 IO**。
+     */
+    @Volatile
     private var pairingLink: PtpIpClient? = null
+
+    /** 只保护 [pairingLink] / [pairingHost] 这两个引用的读与写，临界区是纯粹的赋值/取值。 */
+    private val pairingLock = Any()
 
     /** 进行中的配对目标相机。 */
     @Volatile
     var pairingHost: String? = null
         private set
+
+    /**
+     * 在锁内清掉配对连接引用；**仅当当前指向的正是 [client] 时才清** ——
+     * 避免清掉后来新建的那一条（收尾的旧连接不该动新连接的状态）。
+     */
+    private fun clearPairingLink(client: PtpIpClient) {
+        synchronized(pairingLock) {
+            if (pairingLink === client) {
+                pairingLink = null
+                pairingHost = null
+            }
+        }
+    }
 
     /**
      * **第一步**：连上相机并发 `PAIR_BEGIN`，使相机亮出配对码；连接**保持打开**。
@@ -301,8 +327,10 @@ object ObjectRepository {
                         runCatching { client.close() }
                         PairOutcome.ALREADY_PAIRED
                     } else {
-                        pairingLink = client
-                        pairingHost = host
+                        synchronized(pairingLock) {
+                            pairingLink = client
+                            pairingHost = host
+                        }
                         PairOutcome.PAIRED
                     }
                 } catch (e: PairingClient.DeviceBusyException) {
@@ -327,8 +355,13 @@ object ObjectRepository {
      * @return [PairOutcome]，失败时内部已 abort 并关掉配对连接
      */
     fun pairExchange(host: String, code: String, onEvent: PtpIpClient.EventListener? = null): PairOutcome {
-        val client = pairingLink
-        if (client == null || pairingHost != host) {
+        // 取引用要在锁内：本方法与 pairBegin 的写入、pairAbort 的取走并发时，
+        // 必须保证读到的是"当前那一条"，且不会读到写了一半的状态。
+        val client = synchronized(pairingLock) {
+            val c = pairingLink
+            if (c == null || pairingHost != host) null else c
+        }
+        if (client == null) {
             Log.d(TAG, "pairExchange 没有进行中的配对连接（host=$host）")
             return PairOutcome.FAILED
         }
@@ -339,8 +372,7 @@ object ObjectRepository {
                         sendReq = { op, tx, blob -> client.sendRaw(PtpCodec.opReqBlob(op, tx, blob)) },
                         recvRsp = { client.recvPlainOpBlob() },
                     ).exchange(code)
-                    pairingLink = null
-                    pairingHost = null
+                    clearPairingLink(client)
                     // 配对期结束 → 起控制读线程，把这条连接转成正式会话
                     client.finishPairing(onEvent)
                     // 再开事件通道（相机主动推事件那条链路）。★ 与 connect() 一致：
@@ -355,8 +387,7 @@ object ObjectRepository {
                 } catch (e: Exception) {
                     Log.d(TAG, "pairExchange failed: ${e.javaClass.simpleName} ${e.message}")
                     runCatching { client.close() }
-                    pairingLink = null
-                    pairingHost = null
+                    clearPairingLink(client)
                     PairOutcome.FAILED
                 }
             }.get()
@@ -373,16 +404,27 @@ object ObjectRepository {
      * 不用等它自己发现连接断了。
      */
     fun pairAbort() {
-        val client = pairingLink ?: return
-        pairingLink = null
-        pairingHost = null
-        runCatching {
-            PairingClient(
-                sendReq = { op, tx, blob -> client.sendRaw(PtpCodec.opReqBlob(op, tx, blob)) },
-                recvRsp = { client.recvPlainOpBlob() },
-            ).abort()
+        // "取走引用 + 置空"必须在同一个临界区里完成：分两步做的话，与 pairBegin
+        // 的赋值交错时会漏掉刚刚建好的那条连接 —— 连接没人管、相机端配对窗口
+        // 一直被占，直到下一次配对才被清掉。
+        val client = synchronized(pairingLock) {
+            val c = pairingLink
+            pairingLink = null
+            pairingHost = null
+            c
+        } ?: return
+        // 网络 IO（ABORT 帧 + 关闭）一律丢给 ioExecutor：既不在锁内做，也不占用
+        // 调用方线程（通常是主线程的 UI 取消操作）。ioExecutor 是单线程队列，
+        // 所以它一定排在本方法之后提交的 pairBegin 任务之前执行 —— 顺序不变。
+        ioExecutor.execute {
+            runCatching {
+                PairingClient(
+                    sendReq = { op, tx, blob -> client.sendRaw(PtpCodec.opReqBlob(op, tx, blob)) },
+                    recvRsp = { client.recvPlainOpBlob() },
+                ).abort()
+            }
+            runCatching { client.close() }
         }
-        runCatching { client.close() }
     }
 
     fun disconnect(host: String) {
@@ -392,9 +434,6 @@ object ObjectRepository {
     fun closeAll() {
         for (h in sessions.keys.toList()) disconnect(h)
     }
-
-    /** 该会话的相机名字（未连接时返回 null）。 */
-    fun cameraNameOf(host: String): String? = sessions[host]?.cameraName
 
     // ============================================================
     // 目录浏览 / 元数据
@@ -503,11 +542,6 @@ object ObjectRepository {
         false
     }
 
-    /** 解析 LIST_DIR 的 JSON；兼容裸数组。 */
-    internal fun parseEntries(json: String, dir: String): List<FtpEntry> {
-        return parsePage(json, dir, 0).entries
-    }
-
     internal fun parsePage(json: String, dir: String, requestedOffset: Int): DirPage {
         val text = json.trim()
         if (text.isEmpty()) return DirPage(emptyList(), requestedOffset, false)
@@ -547,10 +581,6 @@ object ObjectRepository {
     // 缩略图 / 预览（GET_OBJECT + 文件端口，一次性令牌）
     // ============================================================
 
-    /** 小缩略图（160×120 内嵌 JPEG，~6KB）。失败返回 null（与 FTP 版一致）。 */
-    fun fetchVirtualThumb(host: String, cameraPath: String): ByteArray? =
-        fetchObject(host, normalize(cameraPath), PtpCodec.KIND_THUMB, IO_TIMEOUT_MS)
-
     /** 大预览（1616×1080 内嵌 JPEG，~0.4MB）。失败返回 null。 */
     fun fetchVirtualPreview(host: String, cameraPath: String): ByteArray? =
         fetchObject(host, normalize(cameraPath), PtpCodec.KIND_PREVIEW, IO_TIMEOUT_MS)
@@ -558,44 +588,189 @@ object ObjectRepository {
     private fun normalize(cameraPath: String): String =
         if (cameraPath.startsWith("/")) cameraPath else "/$cameraPath"
 
-    private fun fetchObject(host: String, path: String, kind: Int, timeoutMs: Int): ByteArray? = try {
-        xferExecutor.submit<ByteArray?> {
-            val client = requireClient(host)
-            val ticket = client.getObjectWhole(path, kind)
-            val out = ByteArrayOutputStream(if (kind == PtpCodec.KIND_THUMB) 16 * 1024 else 512 * 1024)
-            var total = -1L
-            val received = DataChannel(
-                host = host,
-                filePort = ticket.filePort,
-                guid16 = client.cameraGuid16,
-                connNo = client.connNo,
-                socketFactory = socketFactoryOrNull(),
-            ).use { ch ->
-                ch.download(
-                    token = ticket.token,
-                    expectedTxId = 1,
-                    expectedBytes = -1L,
-                    timeoutMs = timeoutMs,
-                    onTotal = { total = it },
-                ) { buf, off, len ->
-                    out.write(buf, off, len)
-                }
-            }
-            // ★ **收不满就当失败，绝不把半张图交出去**：缩略图/预览图会被写到磁盘缓存
-            //   （cache/thumbs、cache/previews），而缓存是持久的 —— 一次短收就留下一个
-            //   永久坏图，用户会一直看到"坏块 / 糊"（2026-09-14 实测：63 个缓存文件里
-            //   30 个是这样留下的，尺寸恰好是收发块大小的整数倍）。
-            //   返回 null 的代价只是这一次显示"无法获取预览"，比缓存一张坏图好得多。
-            if (total >= 0 && received != total) {
-                Log.d(TAG, "fetchObject 短收 kind=$kind path=$path 收到 $received / 共 $total")
-                null
-            } else {
-                out.toByteArray()
-            }
-        }.get()
+    /** 一次性取件凭据（换令牌的产物）。见 [openObjectTicket] / [downloadObject]。 */
+    class ObjectTicket internal constructor(
+        internal val host: String,
+        internal val path: String,
+        internal val kind: Int,
+        internal val token: Long,
+        internal val filePort: Int,
+        internal val connNo: Int,
+    )
+
+    /**
+     * 两步式取图的**第一步**：在控制通道上换取一次性令牌。
+     *
+     * <p>★ 2.7.0（提速）：**不再经 [xferExecutor] 串行**。旧写法给这一步套了单线程
+     * 执行器，理由是"控制通道单连接请求-应答必须串行"—— 那是**过时的错误认知**：
+     * `PtpIpClient` 的请求本来就是**流水线化**的（`pending[txId]` 分派 + 发送端
+     * `sendLock` 只保护单帧原子性），多个 OP 可以同时在飞、按 txId 各自取回应答。
+     * 套上单线程后，小图 4 路 + 周期 3 路的所有令牌往返被串成"一次一个"，
+     * 实测把整条管线压到 **~5.4 次/秒**（273 小图 + 163×2 预览令牌 / 110 秒），
+     * 数据通道 44% 时间在空转等令牌 —— 聚合吞吐因此只有 0.66MB/s。
+     *
+     * <p>现在直接在当前线程（调用方的池线程）发起：控制面并发度由池大小天然限住，
+     * 相机端控制循环本来就是"读一个、答一个"，多几个排队请求照单全收。
+     *
+     * <p>★ 为什么拆两步：自动传输要"同一张图的小图+大预览**同时**传输"（用户定版）。
+     * 数据通道是各自独立的 TCP 连接（相机端每连接一个服务线程），本来就**可以并行**。
+     *
+     * <p>令牌 TTL 15 秒（相机端 issueToken）：换完令牌要尽快下载。
+     */
+    fun openObjectTicket(host: String, cameraPath: String, kind: Int): ObjectTicket? = try {
+        val p = normalize(cameraPath)
+        val client = requireClient(host)
+        val t = client.getObjectWhole(p, kind)
+        ObjectTicket(host, p, kind, t.token, t.filePort, client.connNo)
     } catch (e: Exception) {
-        Log.d(TAG, "fetchObject failed kind=$kind path=$path: ${e.message}")
+        Log.d(TAG, "openObjectTicket failed kind=$kind path=$cameraPath: ${e.message}")
         null
+    }
+
+    /**
+     * 两步式取图的**第二步**：开数据连接下载（阻塞，在**调用者线程**上跑）。
+     *
+     * <p>短收判失败（绝不把半张图交出去）——语义与原来的单函数版完全一致。
+     * [ObjectTicket] 一次性，不要复用。
+     */
+    fun downloadObject(t: ObjectTicket, timeoutMs: Int = IO_TIMEOUT_MS): ByteArray? = try {
+        // ★ 2.7.0 提速诊断：与相机端"传输完成"日志同款口径 —— 两边速率一对照，
+        //   瓶颈在相机发送、网络、还是手机接收（解码/写盘）立判。
+        val beganAt = android.os.SystemClock.elapsedRealtime()
+        val out = ByteArrayOutputStream(if (t.kind == PtpCodec.KIND_THUMB) 16 * 1024 else 512 * 1024)
+        var total = -1L
+        val received = DataChannel(
+            host = t.host,
+            filePort = t.filePort,
+            // ★ 必须是**本机自己的 guid16**：相机端用 `token.deviceId == dataOpen.guid`
+            //   校验这条数据连接归属哪个控制会话，而令牌是拿控制会话的 deviceId 签发的
+            //   （那个值来自控制连接 INIT 里的手机身份，见 ConnectionCenter 的说明）。
+            guid16 = IdentityRepo.guid16(),
+            connNo = t.connNo,
+            socketFactory = socketFactoryOrNull(),
+        ).use { ch ->
+            ch.download(
+                token = t.token,
+                expectedTxId = 1,
+                expectedBytes = -1L,
+                timeoutMs = timeoutMs,
+                onTotal = { total = it },
+            ) { buf, off, len ->
+                out.write(buf, off, len)
+            }
+        }
+        // ★ **收不满就当失败，绝不把半张图交出去**：缩略图/预览图会被写到磁盘缓存
+        //   （cache/thumbs、cache/previews），而缓存是持久的 —— 一次短收就留下一个
+        //   永久坏图，用户会一直看到"坏块 / 糊"（2026-09-14 实测：63 个缓存文件里
+        //   30 个是这样留下的，尺寸恰好是收发块大小的整数倍）。
+        //   返回 null 的代价只是这一次显示"无法获取预览"，比缓存一张坏图好得多。
+        if (total >= 0 && received != total) {
+            Log.d(TAG, "downloadObject 短收 kind=${t.kind} path=${t.path} 收到 $received / 共 $total")
+            null
+        } else {
+            val bytes = out.toByteArray()
+            logRate("download kind=${t.kind} ${t.path}", bytes.size,
+                android.os.SystemClock.elapsedRealtime() - beganAt)
+            bytes
+        }
+    } catch (e: Exception) {
+        Log.d(TAG, "downloadObject failed kind=${t.kind} path=${t.path}: ${e.message}")
+        null
+    }
+
+    /** 一步式取图（先换令牌、随即下载），语义与拆分前完全一致。 */
+    private fun fetchObject(host: String, path: String, kind: Int, timeoutMs: Int): ByteArray? {
+        val t = openObjectTicket(host, path, kind) ?: return null
+        return downloadObject(t, timeoutMs)
+    }
+
+    /** 取图速率日志（2.7.0 提速诊断，与相机端"传输完成"行同款口径，logcat 过滤 ObjRep）。 */
+    private fun logRate(what: String, bytes: Int, ms: Long) {
+        if (ms > 0 && bytes > 0) {
+            Log.d(TAG, "$what ${bytes}B ${ms}ms ${bytes * 1000L / 1024L / ms}KB/s")
+        }
+    }
+
+    /**
+     * **批量取件凭据**（2.7.0）：一个令牌对应一批对象，顺序与 [items] 一致。
+     *
+     * <p>为什么批量：实测每对象的固定成本（控制往返 + TCP 建连/慢启动 + DATA_OPEN 往返）
+     * 把 423KB 的预览切碎；且多流并发在 2.4GHz 弱电台上互相争抢，聚合反低于单流。
+     */
+    fun openBatchTicket(host: String, items: List<Pair<String, Int>>): ObjectTicket? = try {
+        val client = requireClient(host)
+        val norm = items.map { (p, k) -> normalize(p) to k }
+        val t = client.getObjectBatch(norm)
+        // path/kind 对批量无意义（置空），真正的内容在相机端按 1:1 顺序回
+        ObjectTicket(host, "", -1, t.token, t.filePort, client.connNo)
+    } catch (e: Exception) {
+        Log.d(TAG, "openBatchTicket failed: ${e.message}")
+        null
+    }
+
+    /**
+     * **批量下载**（2.7.0）：在**一条数据连接**上把 [count] 项连续取回。
+     *
+     * <p>[onObject] 按 0 基下标回调（null = 该项不可用/短收，与单对象路径同一纪律）；
+     * 返回是否完整收到 [count] 项。
+     */
+    /** 复用中的批量数据通道（2.7.0）：跨批共用一条 TCP —— 省掉每批的建连与慢启动。 */
+    @Volatile
+    private var batchChannel: DataChannel? = null
+
+    private fun batchChannelFor(t: ObjectTicket): DataChannel {
+        batchChannel?.let { return it }
+        val ch = DataChannel(
+            host = t.host,
+            filePort = t.filePort,
+            guid16 = IdentityRepo.guid16(),
+            connNo = t.connNo,
+            socketFactory = socketFactoryOrNull(),
+        )
+        batchChannel = ch
+        return ch
+    }
+
+    private fun dropBatchChannel() {
+        runCatching { batchChannel?.close() }
+        batchChannel = null
+    }
+
+    fun downloadBatch(
+        t: ObjectTicket,
+        count: Int,
+        timeoutMs: Int = IO_TIMEOUT_MS,
+        labels: List<String> = emptyList(),
+        onObject: (Int, ByteArray?) -> Unit,
+    ): Boolean {
+        // ① 先试复用通道（相机端 serveFile 本来就支持一条连接连续服务多个 DATA_OPEN）；
+        // ② 复用失败（相机端空闲超时关流等）→ 丢弃旧通道、新连接再试一次。
+        //    重试可能把已回调过的项再回调一遍（写盘幂等、states 重设，无副作用）。
+        if (runBatch(t, count, timeoutMs, labels, true, onObject)) return true
+        dropBatchChannel()
+        return runBatch(t, count, timeoutMs, labels, false, onObject)
+    }
+
+    private fun runBatch(
+        t: ObjectTicket,
+        count: Int,
+        timeoutMs: Int,
+        labels: List<String>,
+        reuse: Boolean,
+        onObject: (Int, ByteArray?) -> Unit,
+    ): Boolean = try {
+        val beganAt = android.os.SystemClock.elapsedRealtime()
+        var bytes = 0L
+        val got = batchChannelFor(t).downloadMany(t.token, count, timeoutMs, labels, reuse) { i, b ->
+            if (b != null) bytes += b.size
+            onObject(i, b)
+        }
+        logRate("batch ${got}项" + (if (reuse) " 复用" else " 新建"), bytes.toInt(),
+            android.os.SystemClock.elapsedRealtime() - beganAt)
+        got == count
+    } catch (e: Exception) {
+        Log.d(TAG, "runBatch failed(reuse=$reuse): ${e.message}")
+        false
     }
 
     // ============================================================
@@ -632,6 +807,10 @@ object ObjectRepository {
                 }
                 val ticket = client.getObject(path, PtpCodec.KIND_ORIGINAL, startOffset, -1)
                 val expectedRemaining = stat.size - startOffset
+                // ★ 2.7.0 提速诊断：原图传输（ORIGINAL 通道**不做任何解析**，纯 SD 读 +
+                //   发送）的端到端速率 = "链路 + 相机发送"的上限。与预览通道的速率
+                //   一对照即可分辨瓶颈：两者都掉 = 链路饱和；只有预览掉 = 相机解图 CPU 饱和。
+                val beganAt = android.os.SystemClock.elapsedRealtime()
 
                 var written = startOffset
                 // ★ 进度回调**合并上报**（原来是每 128 KiB 一次）：上层每个回调都要
@@ -654,7 +833,8 @@ object ObjectRepository {
                 val received = DataChannel(
                     host = host,
                     filePort = ticket.filePort,
-                    guid16 = client.cameraGuid16,
+                    // ★ 同 fetchObject：数据连接的身份必须与主控制会话一致（本机自己的 guid16）
+                    guid16 = IdentityRepo.guid16(),
                     connNo = client.connNo,
                     socketFactory = socketFactoryOrNull(),
                 ).use { ch ->
@@ -675,7 +855,7 @@ object ObjectRepository {
                 // 收尾补一次：合并之后最后一小截可能没够阈值，进度条要落到终点
                 onProgress(written)
 
-                when {
+                val pumpResult = when {
                     cancelled() -> PumpResult.CANCELLED
                     total >= 0 && received == total -> PumpResult.COMPLETED
                     else -> {
@@ -683,6 +863,10 @@ object ObjectRepository {
                         PumpResult.FAILED
                     }
                 }
+                // ★ 2.7.0 提速诊断：本条原图传输的端到端速率（见上面 beganAt 的说明）
+                logRate("pump ${path}", (received - startOffset).toInt(),
+                    android.os.SystemClock.elapsedRealtime() - beganAt)
+                pumpResult
             }.get()
         } catch (e: Exception) {
             Log.d(TAG, "pump failed: ${e.message}")

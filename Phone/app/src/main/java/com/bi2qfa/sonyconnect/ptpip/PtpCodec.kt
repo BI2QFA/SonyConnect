@@ -72,6 +72,13 @@ object PtpCodec {
     const val OP_THUMB_QUEUE_PAUSE = 0x9024
     const val OP_THUMB_QUEUE_RESUME = 0x9025
     const val OP_THUMB_QUEUE_CANCEL = 0x9026
+    /**
+     * 批量取对象（2.7.0，与相机端同码）：blob 每行 `"T\t/path"`（小图）或 `"P\t/path"`
+     * （大预览），一次登记一批（≤32 项）→ 回 `{token, filePort}`，随后在**一条数据连接**
+     * 上连续取走（见 [DataChannel.downloadMany]）。把每对象的固定开销（控制往返 +
+     * TCP 建连/慢启动）摊销掉，并让数据面回到单流。
+     */
+    const val OP_GET_OBJECT_BATCH = 0x9027
     // 0x9030 原为 OP_EXIT_APP（手机请相机端退出，用于"传输完成后自动关闭相机端"）。
     // 该功能已按用户要求**两端一起彻底删除**，号段留空不再使用。
     // 相机端的退出只剩**手动**一条路（相机自己选项菜单里的「退出应用程序」）。
@@ -149,7 +156,15 @@ object PtpCodec {
     const val KIND_ORIGINAL = 2
 
     /** 厂商友好名标记。 */
-    const val VENDOR_TAG = "SonyConnect/2.0"
+    /**
+     * **厂商标识**：探测包靠它区分"这是不是 SonyConnect"。
+     *
+     * ★★ 它是**协议契约**，与相机端 `PtpCodec.VENDOR_TAG` **必须逐字一致**：
+     *   本端把 `"<本机名> " + VENDOR_TAG` 发出去，相机端认这个后缀才回**扩展应答**
+     *   （带 protoPort / filePort / pairingMode / paired）；两端不一致时相机只回短包，
+     *   本端就"扫不到设备"。改版本号时两端必须一起改、一起装。
+     */
+    const val VENDOR_TAG = "SonyConnect/2.6"
 
     // ============================================================
     // 基础字节读写（小端）

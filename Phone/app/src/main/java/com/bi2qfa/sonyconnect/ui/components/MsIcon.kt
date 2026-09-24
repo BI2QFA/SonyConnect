@@ -33,7 +33,8 @@ import androidx.compose.ui.input.pointer.PointerEventPass
  * Material Symbols 图标身份。
  *
  * 每个成员带着**码位**（可变字体里那个字形的位置）与**官方图标名**。
- * 用字体而不是矢量图（`res/drawable/ic_*.xml`）的唯一理由：**只有字体能用到可变轴**
+ * 用字体而不是矢量图的唯一理由：**只有字体能用到可变轴**
+ * （早先那批 `res/drawable/ic_*.xml` 已随字体换装删除，只留通知栏用的 `ic_stat_transfer`）
  * —— FILL / wght 这些轴在静态 path 上根本不存在，"按下变实心"这种效果就做不出来。
  *
  * 字体是官方 `MaterialSymbolsOutlined[FILL,GRAD,opsz,wght].ttf` 的**子集**
@@ -75,6 +76,8 @@ enum class MsIcon(val codePoint: Int, val officialName: String) {
     NAV_TRANSFERS(0xE8D5, "swap_vert"),
     PALETTE_DOTS(0xE40A, "palette"),
     REFRESH(0xE5D5, "refresh"),
+    /** 大预览的旋转按钮：方框 + 逆时针箭头（`rotate_90_degrees_ccw`，图库通用语义）。 */
+    ROTATE_CCW(0xE418, "rotate_90_degrees_ccw"),
     REWARD(0xE8F6, "redeem"),
     SELECT_ALL(0xE162, "select_all"),
     SELECT_INVERSE(0xEBB6, "deselect"),
@@ -182,13 +185,18 @@ fun MsIcon(
     // 观察按下：进/出都**不消费**事件（不起 drag、不吞 up）
     val selfPressed = remember { mutableStateOf(false) }
 
+    // ★ 2.7.0（用户定版）：没显式给源时**优先取所在容器的交互源**（[LocalRowInteraction]）——
+    //   只要外层可点容器把源发布出来，按到容器**任意处**图标都会弹；完全拿不到源才退回
+    //   "只认图标自身边界"的自检（旧行为，仅适合孤立图标）。用户实测病根就在这里：
+    //   "必须精准按到图标上才会变实心"。
+    val pressSource = interactionSource ?: LocalRowInteraction.current
     val pressed: Boolean = when {
         !animated -> false
-        interactionSource != null -> interactionSource.collectIsPressedAsState().value
+        pressSource != null -> pressSource.collectIsPressedAsState().value
         else -> selfPressed.value
     }
 
-    val pressModifier = if (animated && interactionSource == null) {
+    val pressModifier = if (animated && pressSource == null) {
         Modifier.pointerInput(Unit) {
             awaitPointerEventScope {
                 while (true) {
