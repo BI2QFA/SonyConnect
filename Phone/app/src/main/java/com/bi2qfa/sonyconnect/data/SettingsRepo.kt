@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 
 /**
@@ -20,6 +21,22 @@ object SettingsRepo {
     // ★ 键名保持 "lastConnectedDevice" 不改（改名会让已装机用户的记录凭空消失，
     //   而这个值现在承担的是"上次选中的设备"，语义已经变过一次，见 updateLastDevice）
     private const val KEY_LAST_DEVICE = "lastConnectedDevice" // 设备码 hex
+
+    // ===== 2.6：自动传输预览图 + 持久缓存上限（见 PLAN-AutoPreview-Cache.md）=====
+
+    private const val KEY_AUTO_PREVIEW = "autoPreviewFetch"
+    private const val KEY_CACHE_LIMIT = "cacheLimitBytes"
+
+    /** 缓存上限默认值（用户定版）：512 MB。 */
+    const val DEFAULT_CACHE_LIMIT = 512L * 1024 * 1024
+
+    /** 设置页可选档位（用户定版四档）。 */
+    val CACHE_LIMIT_OPTIONS = longArrayOf(
+        256L * 1024 * 1024,
+        512L * 1024 * 1024,
+        1024L * 1024 * 1024,
+        2048L * 1024 * 1024,
+    )
 
     lateinit var prefs: SharedPreferences
         private set
@@ -48,6 +65,19 @@ object SettingsRepo {
     var lastConnectedDevice by mutableStateOf("")
         private set
 
+    /**
+     * 自动传输预览图（2.6，默认**关**）。
+     *
+     * 开启后每次连接建立会把整份预热名单交给 [ThumbStore.startAutoFetch]：
+     * 一张图"先小图、再大预览"传完再下一张（用户定版策略）。
+     */
+    var autoPreviewFetch by mutableStateOf(false)
+        private set
+
+    /** 图像缓存（小图+预览合计）字节上限，设置页四档可选。 */
+    var cacheLimitBytes by mutableLongStateOf(DEFAULT_CACHE_LIMIT)
+        private set
+
     fun init(context: Context) {
         prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
         downloadTreeUri = prefs.getString(KEY_TREE, "") ?: ""
@@ -57,6 +87,8 @@ object SettingsRepo {
         //   就是深色）。没主动改过的用户直接看到深色；设置里仍可切回跟随系统/浅色。
         darkMode = prefs.getInt(KEY_DARK, 2)
         lastConnectedDevice = prefs.getString(KEY_LAST_DEVICE, "") ?: ""
+        autoPreviewFetch = prefs.getBoolean(KEY_AUTO_PREVIEW, false)
+        cacheLimitBytes = prefs.getLong(KEY_CACHE_LIMIT, DEFAULT_CACHE_LIMIT)
     }
 
     /**
@@ -90,6 +122,37 @@ object SettingsRepo {
         prefs.edit().putInt(KEY_DARK, v).apply()
     }
 
+    /**
+     * 开关自动传输预览图。
+     *
+     * ★ 2.6（用户定版）：**开关一改就以当前状态重启传输流程** ——
+     *   开 → 立即按全量名单重摆自动队列（已缓存的周期瞬间跳过，只补缺的）；
+     *   关 → 立即停掉自动队列、只重摆还缺的小图。
+     *   原来只有"关"这一步（清队列），"开"要等下一次连接才生效 —— 传输过程中
+     *   反复开关会出现"关了还在传 / 开了没反应"的错位。
+     */
+    fun updateAutoPreviewFetch(v: Boolean) {
+        autoPreviewFetch = v
+        prefs.edit().putBoolean(KEY_AUTO_PREVIEW, v).apply()
+        ThumbStore.restartAutoFetch()
+    }
+
+    /** 上限调小后立刻收敛占用（[ThumbStore.onLimitChanged] 起后台线程修剪）。 */
+    fun updateCacheLimitBytes(v: Long) {
+        cacheLimitBytes = v
+        prefs.edit().putLong(KEY_CACHE_LIMIT, v).apply()
+        ThumbStore.onLimitChanged()
+    }
+
+    /** 档位的显示文案："512 MB" / "1 GB" / "2 GB"。 */
+    fun formatCacheLimit(v: Long): String {
+        val gb = v / (1024.0 * 1024.0 * 1024.0)
+        return if (gb >= 1.0) {
+            if (gb == gb.toLong().toDouble()) "${gb.toLong()} GB" else "%.1f GB".format(gb)
+        } else {
+            "${v / (1024 * 1024)} MB"
+        }
+    }
     /**
      * 下载目录的友好显示名（用户反馈：直接摆 content:// URI 不是人话）。
      * tree document id 形如 "primary:sony" → "内部存储/sony"。

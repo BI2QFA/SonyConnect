@@ -836,7 +836,14 @@ public final class RecSession {
                 out.add(String.valueOf(o));
             }
         }
-        sb.append(SJson.strArray(out));
+        sb.append('[');
+        for (int i = 0; i < out.size(); i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append(SJson.str(out.get(i)));
+        }
+        sb.append(']');
     }
 
     private void putAnyList(StringBuilder sb, String key, Object listObj) {

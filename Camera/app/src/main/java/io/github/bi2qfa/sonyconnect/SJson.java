@@ -73,15 +73,6 @@ public final class SJson {
         return sb.append('}').toString();
     }
 
-    /** 字符串数组字面量 */
-    public static String strArray(List<String> list) {
-        StringBuilder sb = new StringBuilder("[");
-        for (int i = 0; i < list.size(); i++) {
-            if (i > 0) sb.append(',');
-            sb.append(str(list.get(i)));
-        }
-        return sb.append(']').toString();
-    }
 
     // ===== 解析（扁平对象） =====
 
@@ -108,11 +99,6 @@ public final class SJson {
         return v instanceof Long ? (Long) v : dft;
     }
 
-    @SuppressWarnings("unchecked")
-    public static List<String> asStringList(Map<String, Object> obj, String key) {
-        Object v = obj.get(key);
-        return v instanceof List ? (List<String>) v : null;
-    }
 
     private static final class Parser {
         private final String s;

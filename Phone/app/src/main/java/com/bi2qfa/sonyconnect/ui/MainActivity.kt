@@ -186,9 +186,9 @@ fun AppRoot() {
     //   主界面也是如此 —— 要记住上一次显示了什么"）。
     //
     //   之前是手写的层级规则（设置返回=关设置、非主界面 tab 返回=回主界面…），
-    //   每一层"返回该去哪"各写各的，结果"关于 → 打赏"按返回直接跳回设置一级
-    //   （打赏的层级规则只认得"回 Hub"），用户实测报了 bug。现在**前进**时把当前
-    //   屏压栈，返回弹栈回到上一次显示的那一屏 —— 打赏返回回关于、设置返回回
+    //   每一层"返回该去哪"各写各的，结果"关于 → 赞助"按返回直接跳回设置一级
+    //   （赞助的层级规则只认得"回 Hub"），用户实测报了 bug。现在**前进**时把当前
+    //   屏压栈，返回弹栈回到上一次显示的那一屏 —— 赞助返回回关于、设置返回回
     //   进入前的 tab、tab 之间也互相记得，全部自动成立。
     //
     //   栈空且已在主界面（tab0）时 handler 关闭 → 交给系统退出。
@@ -199,7 +199,7 @@ fun AppRoot() {
      *
      * ★★ 不能把压栈挂在 screenKey 变化上：返回（弹栈恢复）同样会改变 screenKey，
      *   那一来"回退"也会往栈里塞刚离开的屏 —— 栈越弹越深、还会绕回刚离开的屏
-     *   （实测：关于 → 打赏，按返回回关于，再按却进了打赏）。正解是经典模型：
+     *   （实测：关于 → 赞助，按返回回关于，再按却进了赞助）。正解是经典模型：
      *   **前进处压栈、返回处弹栈**，两条路彻底分开。
      */
     fun pushCurrent() {
@@ -286,6 +286,23 @@ fun AppRoot() {
     //   旧式遮挡处理（用户反馈：下面字被切割，说明还留着遮挡）。悬浮栏就该盖在内容
     //   之上，所以这里改成 Box 覆盖；内容铺满整屏，各可滚动页自己留 FloatingNavInset
     //   的底部余地，最后一项照样能滚到栏上方。
+    // ★ 控制中心面板里的两件事，**一次定义、三处复用**：主界面的悬浮栏，以及两个
+    //   预览器里的悬浮栏（它们是小球+面板整块复用过来的，回调必须一路透传进去，
+    //   否则预览器里点"设置/切换设备"没反应 —— 用户定版要求这里也要能用）。
+    val panelOpenSettings: () -> Unit = {
+        pushCurrent()
+        // 每次从面板进设置都从头开始，而不是停在上次那个二级页
+        settingsPage = SettingsPage.Hub
+        showSettings = true
+    }
+    val panelSwitchDevice: (String) -> Unit = { guid ->
+        pushCurrent()
+        // 切设备 = 直接进那台设备的主界面（用户定版）：先回主页签，
+        // 主页那张卡会显示"正在连接 <那台>"直到连上/报错
+        tab = 0
+        ConnectionCenter.switchTo(context, guid)
+    }
+
     Box(Modifier.fillMaxSize()) {
         Scaffold(
             // ★ containerColor 必须是**当前方案的 surface**，不能留透明：
@@ -383,9 +400,14 @@ fun AppRoot() {
                                 pushCurrent()
                                 tab = 2
                             },
+                            onOpenSettings = panelOpenSettings,
+                            onSwitchDevice = panelSwitchDevice,
                             dirState = filesDir,
                         )
-                        else -> TransfersScreen()
+                        else -> TransfersScreen(
+                            onOpenSettings = panelOpenSettings,
+                            onSwitchDevice = panelSwitchDevice,
+                        )
                     }
                 }
             }
@@ -401,19 +423,8 @@ fun AppRoot() {
                 modifier = Modifier.fillMaxSize(),
                 tabIndex = tab,
                 onTab = { tab = it },
-                onOpenSettings = {
-                    pushCurrent()
-                    // 每次从面板进设置都从头开始，而不是停在上次那个二级页
-                    settingsPage = SettingsPage.Hub
-                    showSettings = true
-                },
-                onSwitchDevice = { guid ->
-                    pushCurrent()
-                    // 切设备 = 直接进那台设备的主界面（用户定版）：先回主页签，
-                    // 主页那张卡会显示"正在连接 <那台>"直到连上/报错
-                    tab = 0
-                    ConnectionCenter.switchTo(context, guid)
-                },
+                onOpenSettings = panelOpenSettings,
+                onSwitchDevice = panelSwitchDevice,
             )
         }
     }

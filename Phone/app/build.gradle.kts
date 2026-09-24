@@ -17,9 +17,9 @@ android {
         applicationId = "io.github.bi2qfa.sonyconnect"
         minSdk = 31          // Android 12（需求指定）
         targetSdk = 36
-        // 2.5 线按全新安装发布：两端统一 versionCode=1。
+        // 2.6 线（vc 1，与相机端同步）：自动传输预览图 + 持久缓存可配置 + 去预热名单 200 上限。
         versionCode = 1
-        versionName = "2.5"
+        versionName = "2.6"
     }
 
     buildTypes {

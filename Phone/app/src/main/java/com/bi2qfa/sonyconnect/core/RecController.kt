@@ -121,7 +121,6 @@ object RecController {
             if (path.isNotBlank()) {
                 val jpeg = withContext(Dispatchers.IO) {
                     ObjectRepository.fetchVirtualPreview(h, path)
-                        ?: ObjectRepository.fetchVirtualThumb(h, path)
                 }
                 if (jpeg != null) {
                     postview = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)

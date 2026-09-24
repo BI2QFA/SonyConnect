@@ -2,8 +2,11 @@ package io.github.bi2qfa.sonyconnect;
 
 import java.io.File;
 import java.io.RandomAccessFile;
+import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 相机侧业务实现：把 {@link PtpIpServer.Handler} 的 16 个方法与可选的
@@ -72,10 +75,28 @@ public class PtpCameraHandler implements PtpIpServer.Handler, PtpIpServer.Pairin
     private final Platform platform;
 
     /** 缩略图提取的记忆化上限：只记小图，别让 425 KB 的大预览长期占住相机堆内存。 */
-    private static final int MEMO_MAX_BYTES = 64 * 1024;
+    /** 记忆化单条上限：只有 ≤ 1MB 的产物才回填（大预览捆绑包 ~0.5MB，正好装得下）。 */
+    private static final int MEMO_MAX_BYTES = 1024 * 1024;
+
+    /**
+     * 记忆化条数（2.6：单条 → 4 条 LRU）。
+     *
+     * <p>为什么单条不够：手机端的**批量流式**会连着取多张（微批 8 张的顺序是
+     * 小图/大图交替），单条记忆会被下一张立刻顶掉，等于每次都重新解析；
+     * 4 条刚好覆盖"当前批里最近几张"的工作集，而按条数+字节双闸又不会撑爆相机那点堆。
+     * ★ 键必须**同时**区分路径与 kind（历史 bug 根因：只按路径记会把小图当大图发出去）。
+     */
+    private static final int MEMO_ENTRIES = 4;
+
     private final Object memoLock = new Object();
-    private String memoKey;
-    private byte[] memoBytes;
+
+    /** 访问序（accessOrder=true）LRU：读一次就挪到队尾，淘汰由 removeEldestEntry 决定。 */
+    private final LinkedHashMap<String, byte[]> memo =
+            new LinkedHashMap<String, byte[]>(8, 0.75f, true) {
+                protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
+                    return size() > MEMO_ENTRIES;
+                }
+            };
 
     public PtpCameraHandler(File rootDir,
                             ThumbPrefetcher prefetcher,
@@ -289,6 +310,10 @@ public class PtpCameraHandler implements PtpIpServer.Handler, PtpIpServer.Pairin
                     }
                 }
 
+                public long size() {
+                    return size;
+                }
+
                 public void close() {
                     try {
                         raf.close();
@@ -311,6 +336,10 @@ public class PtpCameraHandler implements PtpIpServer.Handler, PtpIpServer.Pairin
                 return n;
             }
 
+            public long size() {
+                return whole.length;
+            }
+
             public void close() {
                 // 小图整份在内存里，没有句柄要放
             }
@@ -329,12 +358,32 @@ public class PtpCameraHandler implements PtpIpServer.Handler, PtpIpServer.Pairin
         return b == null ? -1L : b.length;
     }
 
+    /**
+     * 对象存在性预检（2.6）：控制面在发令牌前只做**廉价**判断。
+     *
+     * <p>历史问题：{@code OP_GET_OBJECT} 分发调 {@code objectSize} 判断"有没有"，
+     * 而 objectSize 对非原图要去解析媒体文件（几十~几百 ms）—— 控制线程被拖住，
+     * 实测只跑出 5 次/秒。现在"存在性"只问文件系统（+ 格式是否受支持），
+     * 真正的解析推迟到数据连接里按需做。
+     */
+    public boolean objectExists(String path, int kind) {
+        File f = fileOf(path);
+        if (f == null || !f.isFile()) {
+            return false;
+        }
+        if (kind == PtpCodec.KIND_ORIGINAL) {
+            return true;
+        }
+        return ThumbnailExtractor.supports(f);
+    }
+
     public long objectMtime(String path) {
         File f = fileOf(path);
         if (f == null || !f.exists()) {
             return -1L;
         }
-        return f.lastModified();
+        // ★ 2.6：FAT 的 mtime 是相机本地时间，按相机时区折回 UTC（见 CameraTime）
+        return CameraTime.correct(f.lastModified());
     }
 
     /**
@@ -389,7 +438,7 @@ public class PtpCameraHandler implements PtpIpServer.Handler, PtpIpServer.Pairin
             sb.append(SJson.str("name")).append(':').append(SJson.str(name));
             sb.append(',').append(SJson.str("dir")).append(':').append(isDir ? "true" : "false");
             sb.append(',').append(SJson.str("size")).append(':').append(isDir ? 0L : f.length());
-            sb.append(',').append(SJson.str("mtime")).append(':').append(f.lastModified());
+            sb.append(',').append(SJson.str("mtime")).append(':').append(CameraTime.correct(f.lastModified()));
             sb.append('}');
             n++;
         }
@@ -645,36 +694,74 @@ public class PtpCameraHandler implements PtpIpServer.Handler, PtpIpServer.Pairin
             return null;
         }
         String rel = relOf(absPath);
+        // 预取缓存优先：小图常驻在预取器的 LRU 里（手机端滚动列表时会反复要同一批），
+        // 命中就不进记忆化 —— 那份是"解析产物"，这份是"已经在内存里的同一份字节"。
         if (kind == PtpCodec.KIND_THUMB && prefetcher != null && rel != null) {
             byte[] hit = prefetcher.lookup(rel);
             if (hit != null) {
                 return hit;
             }
         }
-        // 记忆化：一次 GET_OBJECT 会先问大小（objectSize）再取字节（readObject），
-        // 两者都落到这里 → 不做记忆就是同一张图解析两遍。手机端是串行取图的，
-        // 所以单条记忆必然命中。只记小图（≤ 64 KB），避免为 425 KB 的大预览
-        // 长期占住相机那点堆内存；大预览打开频率低，重复解析一次无所谓。
-        String key = (rel == null ? absPath : rel);
+        // 记忆化（4 条 LRU）：一次 GET_OBJECT 会先问大小（objectSize）再取字节（readObject），
+        // 两者都落到这里 → 不做记忆就是同一张图解析两遍；批量取件时更是每张都要一次。
+        String key = (rel == null ? absPath : rel) + "\u0000" + kind;
         synchronized (memoLock) {
-            if (key.equals(memoKey) && memoBytes != null) {
-                return memoBytes;
+            byte[] hit = memo.get(key);
+            if (hit != null) {
+                return hit;
             }
         }
         byte[] out;
+        String exifJson = null;
         try {
-            out = kind == PtpCodec.KIND_PREVIEW
-                    ? ThumbnailExtractor.extractPreview(f)
-                    : ThumbnailExtractor.extractSmall(f);
+            if (kind == PtpCodec.KIND_PREVIEW) {
+                // 预览与 EXIF **一次会话**联合提取（见 ThumbnailExtractor.extractPreviewWithExif）
+                ThumbnailExtractor.PreviewBundle pb = ThumbnailExtractor.extractPreviewWithExif(f);
+                out = pb == null ? null : pb.jpeg;
+                exifJson = pb == null ? null : pb.exifJson;
+            } else {
+                out = ThumbnailExtractor.extractSmall(f);
+            }
         } catch (Throwable t) {
             out = null;
         }
+        if (out != null && kind == PtpCodec.KIND_PREVIEW) {
+            // 大预览一律走**捆绑包**（[4B 大端 JSON 长][JSON][JPEG]）下发：
+            // EXIF 与图像同一次传输、同一个对象，手机端拆包后 JPEG 进图片缓存、
+            // JSON 进 sidecar，天然不会"图到了信息没到"（用户定版需求 4）。
+            out = bundlePreview(out, exifJson == null ? "{}" : exifJson);
+        }
         if (out != null && out.length <= MEMO_MAX_BYTES) {
             synchronized (memoLock) {
-                memoKey = key;
-                memoBytes = out;
+                memo.put(key, out);
             }
         }
+        return out;
+    }
+
+    /**
+     * 把大预览打成捆绑包：{@code [4 字节大端 JSON 长度][JSON(UTF-8)][JPEG]}。
+     *
+     * <p>长度字段用**大端**：手机端拆包时先读 4 字节定 JSON 边界，端序在两端写死一致即可；
+     * 这不是 PTP 线格式（那条是 LE），是我们自己的对象载荷，刻意用大端让"读长度"这段
+     * 与协议帧区分开，排障时一眼能认出这是捆绑包。
+     */
+    private static byte[] bundlePreview(byte[] jpg, String json) {
+        byte[] j = new byte[0];
+        if (json != null) {
+            try {
+                j = json.getBytes("UTF-8");
+            } catch (UnsupportedEncodingException e) {
+                j = new byte[0];
+            }
+        }
+        byte[] out = new byte[j.length + 4 + jpg.length];
+        out[0] = (byte) (j.length >>> 24);
+        out[1] = (byte) (j.length >>> 16);
+        out[2] = (byte) (j.length >>> 8);
+        out[3] = (byte) j.length;
+        System.arraycopy(j, 0, out, 4, j.length);
+        System.arraycopy(jpg, 0, out, j.length + 4, jpg.length);
         return out;
     }
 

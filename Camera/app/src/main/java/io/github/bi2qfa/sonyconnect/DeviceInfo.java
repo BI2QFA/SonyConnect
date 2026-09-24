@@ -298,16 +298,7 @@ public class DeviceInfo {
         return -1;
     }
 
-    /** 平台剩余分钟（didep.Power 反射已弃用）；协议字段保留，恒 -1 */
-    public static int getBatteryRemainMin(Context c) {
-        return -1;
-    }
 
-    /** 关于页诊断 */
-    public static String infoSource(Context c) {
-        return (NativeInfo.available() ? "Backup(native)+" : "")
-                + "ScalarProperties/Build/statfs";
-    }
 
     // ===== ScalarProperties（键值直用字符串，不依赖桩常量） =====
 
@@ -352,17 +343,6 @@ public class DeviceInfo {
         return v;
     }
 
-    static void clearDiag(Context c) {
-        synchronized (lock) {
-            cachedModel = null;
-            cachedSerial = null;
-            cachedFirmware = null;
-        }
-        synchronized (fixedLock) {
-            cachedRegion = null;
-            cachedApiVersion = null;
-        }
-    }
 
     // ===== EXIF 兜底（最新照片的 Make/Model/LensModel） =====
 

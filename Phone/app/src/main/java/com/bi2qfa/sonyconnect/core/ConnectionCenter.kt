@@ -422,9 +422,6 @@ object ConnectionCenter {
 
     // ===== 自动连接上次那台（多设备适配的入口） =====
 
-    /** 本机有没有已配对相机 —— 有就直接进主界面，没有才进配对页（用户定版）。 */
-    fun hasPairedDevice(): Boolean = PairingStore.all().isNotEmpty()
-
     /**
      * "上一次最后连接过的设备"的设备码。
      *
@@ -644,7 +641,14 @@ object ConnectionCenter {
                     when (ObjectRepository.connect(
                         host = cam.host,
                         protoPort = cam.protoPort,
-                        guid16 = cam.cameraGuid16,
+                        // ★★★ **本机自己的 guid16**，不是相机的（曾经错填 cam.cameraGuid16）：
+                        //   PTP/IP 的 `Init Command Request` 里那个 GUID 是**发起方（手机）的身份**，
+                        //   相机端 `serveControl` 拿它当"这台手机是谁"——查配对表、建会话、签发
+                        //   传输令牌全用它。填成相机码的后果（实测）：所有手机在相机眼里都是同一个
+                        //   身份（= 相机自己的设备码）→ 相机配对表里永远只有一条记录、名字随最后
+                        //   连接者变；某台手机配对成功后，**其它手机**再来配对会被当成"已配对"而
+                        //   拒绝握手（回 NOT_SUPPORTED，手机端报"相机端版本过旧"）。
+                        guid16 = IdentityRepo.guid16(),
                         friendlyName = IdentityRepo.friendlyName,
                         onEvent = eventListener,
                     )) {
@@ -792,68 +796,74 @@ object ConnectionCenter {
         RecController.reset()
     }
 
-    /** 连接成功后提交缩略图批次：当前目录树下的图片文件由相机端开始预取 */
+    /** 连接成功后提交缩略图批次：当前目录树下的**全部**图片文件由相机端开始预取 */
     /**
-     * 连上相机后**预热多少张缩略图**。
+     * ★ 2.6（用户定版）：**不再截断**——"有多少文件就应该加载多少"。
      *
-     * <p>这不是"能看多少张"的上限 —— 文件页滚动时会按需拉取，看多少都行。
-     * 它只决定"刚连上这一下先让相机准备多少张"（相机端预取是 CPU/IO 热身）。
+     * <p>旧实现把预热名单卡在 200（`THUMB_WARMUP_LIMIT`），带来一串连带问题：
+     * 小图预热、自动传输预览图、相机端预取命令共用这份名单，于是 200 张之外的
+     * 图不在批次里、点开/滚动才逐张按需拉，用户看到的是"点开后面的图、进度条
+     * 又开始重走"。现在名单 = `/DCIM` 下全部图片（深度≤3）。
      *
-     * <p>取 200 的理由：相机端的预取队列上限就是 256（见 `ThumbPrefetcher.MAX_ENTRIES`），
-     * 一次推太多会被相机丢掉一部分，反而看不出实效；而 200 张足够覆盖"进去就看最近拍的"
-     * 这个主要用法。**超出的不是丢了** —— 滚动到那儿会按需拉，只是那一下没有预热。
-     *
-     * <p>★ 旧注释与文档把它当成"静默截断"的缺陷。核实后确认：截断确实存在，
-     * 但**不影响可用性**（按需拉取兜住），所以这里不抬高上限，只把话说清楚 + 加日志。
+     * <p>放开的前提都已核实（见 PLAN-RemoveWarmupLimit.md）：
+     * 协议 blob 一次发全量（每条约 30 字节，`MAX_PACKET=1MB` 两端一致，几千张无压力）；
+     * 相机端预取队列无长度上限、LRU 容量已随本次改到 1024；手机端内存有 LruCache
+     * 淘汰 + 磁盘兜底。
      */
-    private const val THUMB_WARMUP_LIMIT = 200
-
     private fun startThumbBatch() {
         scope.launch {
             runCatching {
                 val h = host ?: return@launch
                 val entries = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    collectImageEntries(h, "/DCIM", THUMB_WARMUP_LIMIT)
+                    collectImageEntries(h, "/DCIM")
                 }
-                // 收满了就说明还有没预热的 —— 记一行，免得日后把"某些图没预热"
-                // 当成相机或协议的问题（这是设计内的行为）
-                if (entries.size >= THUMB_WARMUP_LIMIT) {
-                    Log.d(
-                        TAG,
-                        "缩略图预热已达上限 $THUMB_WARMUP_LIMIT 张，其余滚动时按需拉取",
+                // 留一行可核对的统计（全量名单可能很多，排障时先看这行）
+                Log.d(TAG, "缩略图预热名单：${entries.size} 张")
+                ThumbStore.markBatchQueued(entries.map { it.path })
+                val keys = entries.map {
+                    ThumbStore.ObjectCacheKey(
+                        cameraGuid = camera?.guidHex.orEmpty(),
+                        path = it.path,
+                        size = it.size,
+                        mtime = it.timestamp,
                     )
                 }
-                if (entries.isNotEmpty()) {
-                    ObjectRepository.thumbQueue(h, PtpCodec.OP_THUMB_QUEUE_BEGIN, entries.map { it.path })
-                }
-                ThumbStore.markBatchQueued(entries.map { it.path })
-                // ★ 手机端**真正入队预取**（用户实测"要进到图片文件夹才突然从 0 开始
-                //   加载"的病根）：上面两件事，一个只是让相机端热身、一个只摆了批次
-                //   计数器 —— 真正把缩略图拉回手机的是 FilesScreen 渲染到谁才 request()
-                //   谁，不进文件夹一张都不会拉，面板里的"缩略图 0/N"就一直停着。
-                //   这里带上**完整对象身份**（size/mtime，防同名新文件串图）把预热名单
-                //   直接入队：连上那一刻就开始拉，进度条跟着动，进文件夹时大头已就位。
-                ThumbStore.request(
-                    entries.map {
-                        ThumbStore.ObjectCacheKey(
-                            cameraGuid = camera?.guidHex.orEmpty(),
-                            path = it.path,
-                            size = it.size,
-                            mtime = it.timestamp,
-                        )
+                if (SettingsRepo.autoPreviewFetch) {
+                    // ★ 2.7.0：自动传输开着时，**相机端预取与手机端小图队列都跳过** ——
+                    //   自动通道的批里已包含每个文件的小图（T,P 成对），这两条路再各拉
+                    //   一遍纯属重复；更糟的是相机端预取器的两个 worker 会和批量解析
+                    //   **抢 SD/CPU**（实测：含预览批每项 372ms，而纯小图批每项仅 24ms
+                    //   —— 瓶颈在解析+SD 读，不在网络）。关掉它们，把相机的 SD/CPU 全
+                    //   让给批量解析。名单仍登记（restartAutoFetch 用它"以当前状态重启"）。
+                    ThumbStore.rememberWarmup(keys)
+                    ThumbStore.startAutoFetch(keys)
+                } else {
+                    // 自动传输关闭：维持原行为（相机端预取热身 + 手机端小图队列）
+                    if (entries.isNotEmpty()) {
+                        ObjectRepository.thumbQueue(h, PtpCodec.OP_THUMB_QUEUE_BEGIN, entries.map { it.path })
                     }
-                )
+                    ThumbStore.request(keys)
+                    // ★ 登记名单：设置里开关自动传输 / 清除缓存时，ThumbStore.restartAutoFetch()
+                    //   要靠它"以当前状态重启传输流程"，不必等重连（用户定版）。
+                    ThumbStore.rememberWarmup(keys)
+                }
             }
         }
     }
 
-    /** 递归收集图片条目（真实深度≤3，上限 max）—— 返回**完整条目**（路径+size+mtime）。 */
-    private fun collectImageEntries(host: String, dir: String, max: Int): List<ObjectRepository.FtpEntry> {
+    /**
+     * 递归收集图片条目（真实深度≤3，**不限量**）—— 返回**完整条目**（路径+size+mtime）。
+     *
+     * <p>★ 2.6：原来这里有个 `max` 上限（200），把预热/自动传输的名单截断了；
+     * 用户定版"有多少文件就应该加载多少"，参数与两处截断判断一并删除。
+     * 每目录分页 256 条走 listPage，几千张也只是多翻几页，毫秒级。
+     */
+    private fun collectImageEntries(host: String, dir: String): List<ObjectRepository.FtpEntry> {
         data class DirTask(val path: String, val depth: Int)
         val out = ArrayList<ObjectRepository.FtpEntry>()
         val queue = ArrayDeque<DirTask>()
         queue.add(DirTask(dir, 1))
-        while (queue.isNotEmpty() && out.size < max) {
+        while (queue.isNotEmpty()) {
             val task = queue.removeFirst()
             var offset = 0
             while (true) {
@@ -869,7 +879,6 @@ object ConnectionCenter {
                         val ext = e.ext
                         if (ext == "jpg" || ext == "jpeg" || ext == "arw") out.add(e)
                     }
-                    if (out.size >= max) return out
                 }
                 if (!page.hasMore || page.nextOffset <= offset) break
                 offset = page.nextOffset
@@ -949,7 +958,8 @@ object ConnectionCenter {
                     ObjectRepository.pairBegin(
                         host = cam.host,
                         protoPort = cam.protoPort,
-                        guid16 = cam.cameraGuid16,
+                        // ★ 同上：配对连接也要报**本机自己的身份**（相机靠它在配对表里落键）
+                        guid16 = IdentityRepo.guid16(),
                         friendlyName = IdentityRepo.friendlyName,
                         // "相机已认识本机"那条分支要用它开事件通道 —— 否则相机侧的
                         // 主动通知（解除配对/切换方式/退出）全收不到
@@ -1009,21 +1019,6 @@ object ConnectionCenter {
         scope.launch {
             withContext(kotlinx.coroutines.Dispatchers.IO) { ObjectRepository.pairAbort() }
         }
-    }
-
-    /**
-     * 相机本来就认识本机（本地记录丢了）：不输码，直接补齐记录并进入已连接。
-     *
-     * <p>后续步骤与 [submitPairCode] 成功之后**逐字相同**，所以抽成这一个方法。
-     */
-    private suspend fun adoptAlreadyPaired(cam: Discovery.DiscoveredCamera) {
-        val outcomeClient = ObjectRepository.sessionOf(cam.host)
-        if (outcomeClient == null) {
-            pairingStage = PairStage.IDLE
-            pairingError = "配对连接已丢失，请重试"
-            return
-        }
-        finishPairSuccess(cam)
     }
 
     /**

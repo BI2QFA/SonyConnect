@@ -28,12 +28,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,10 +46,12 @@ import com.bi2qfa.sonyconnect.R
 import com.bi2qfa.sonyconnect.core.ConnectionCenter
 import com.bi2qfa.sonyconnect.data.PairingStore
 import com.bi2qfa.sonyconnect.data.SettingsRepo
+import com.bi2qfa.sonyconnect.data.ThumbStore
 import com.bi2qfa.sonyconnect.ui.components.CardCorner
 import com.bi2qfa.sonyconnect.ui.components.Chevron
 import com.bi2qfa.sonyconnect.ui.components.GroupCard
 import com.bi2qfa.sonyconnect.ui.components.IconCircle
+import com.bi2qfa.sonyconnect.ui.components.PlainDialog
 import com.bi2qfa.sonyconnect.ui.components.RowIconAction
 import com.bi2qfa.sonyconnect.ui.components.Segment
 import com.bi2qfa.sonyconnect.ui.components.SettingsGroup
@@ -60,6 +60,11 @@ import com.bi2qfa.sonyconnect.ui.components.SwitchRow
 import com.bi2qfa.sonyconnect.ui.theme.IconTints
 import com.bi2qfa.sonyconnect.ui.theme.Seeds
 import com.bi2qfa.sonyconnect.ui.components.MsIcon
+import androidx.annotation.DrawableRes
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.text.style.TextAlign
+import com.bi2qfa.sonyconnect.ui.components.SectionHeader
+import com.bi2qfa.sonyconnect.ui.components.ConnectedButtonGroup
 
 /**
  * 设置的页面栈。**一级页只放入口**（一行一件事，行尾一个 "›"），
@@ -72,10 +77,11 @@ enum class SettingsPage(val title: String) {
     Hub("设置"),
     Cameras("已配对相机"),
     Files("文件保存位置"),
+    Storage("预览图与缓存"),
     Appearance("外观"),
     About("关于"),
-    // 打赏：从"关于"页进来（二级页），顶栏标题"打赏"
-    Reward("打赏"),
+    // 赞助：从"关于"页进来（二级页），顶栏标题"赞助"
+    Reward("赞助"),
 }
 
 /**
@@ -103,8 +109,9 @@ fun SettingsScreen(
             SettingsPage.Hub -> SettingsHub(onNavigate)
             SettingsPage.Cameras -> CamerasPage(onOpenPairing)
             SettingsPage.Files -> FilesPage()
+            SettingsPage.Storage -> StoragePage()
             SettingsPage.Appearance -> AppearancePage()
-            // 关于页要把"打赏"作为下一级入口，所以把 onNavigate 传下去
+            // 关于页要把"赞助"作为下一级入口，所以把 onNavigate 传下去
             SettingsPage.About -> AboutPage(onNavigate)
             SettingsPage.Reward -> RewardPage()
         }
@@ -142,6 +149,16 @@ private fun SettingsHub(onNavigate: (SettingsPage) -> Unit) {
     }
     SettingsGroup {
         SettingsRow(
+            index = 0, count = 1,
+            title = "预览图与缓存",
+            support = "自动传输预览图、缓存大小、清除缓存",
+            leading = { IconCircle(MsIcon.IMAGE_PLACEHOLDER, IconTints.Accent) },
+            trailing = { Chevron() },
+            onClick = { onNavigate(SettingsPage.Storage) },
+        )
+    }
+    SettingsGroup {
+        SettingsRow(
             index = 0, count = 2,
             title = "外观",
             support = "跟随系统主题色、调色盘、深浅色",
@@ -152,7 +169,7 @@ private fun SettingsHub(onNavigate: (SettingsPage) -> Unit) {
         SettingsRow(
             index = 1, count = 2,
             title = "关于",
-            support = "版本信息、开发者、打赏",
+            support = "版本信息、开发者、赞助",
             leading = { IconCircle(MsIcon.INFO, IconTints.Accent) },
             trailing = { Chevron() },
             onClick = { onNavigate(SettingsPage.About) },
@@ -339,6 +356,128 @@ private fun FilesPage() {
     }
 }
 
+/** 二级页：预览图与缓存（自动传输开关 + 缓存上限 + 占用 + 清除）。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StoragePage() {
+    val context = LocalContext.current
+    // 占用在进入页面时算一次（不监听 —— 页面停留期间由本页动作引起的变化自己刷新）
+    var usageBytes by remember { mutableStateOf(-1L) }
+    var showClearConfirm by remember { mutableStateOf(false) }
+
+    fun refreshUsage() {
+        usageBytes = -1L
+        Thread({
+            val n = ThumbStore.cacheSizeBytes()
+            android.os.Handler(android.os.Looper.getMainLooper()).post { usageBytes = n }
+        }, "CacheUsage").apply { isDaemon = true; start() }
+    }
+    LaunchedEffect(Unit) { refreshUsage() }
+
+    if (showClearConfirm) {
+        PlainDialog(onDismissRequest = { showClearConfirm = false }) {
+            Column(Modifier.padding(24.dp)) {
+                Text("清除缓存？", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "将删除手机里全部缩略图与预览图缓存（不影响已下载的照片）",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 16.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(onClick = { showClearConfirm = false }) { Text("取消") }
+                    TextButton(onClick = {
+                        showClearConfirm = false
+                        ThumbStore.clearCache()
+                        // ★ 2.6（用户定版）：清完缓存立刻按当前模式重新触发传输 ——
+                        //   自动传输开着就重拉"小图+大预览"，关着就只重拉小图。
+                        //   名单为空（未连接）时 restartAutoFetch 走清空分支，无事发生。
+                        ThumbStore.restartAutoFetch()
+                        android.widget.Toast.makeText(context, "缓存已清除", android.widget.Toast.LENGTH_SHORT).show()
+                        refreshUsage()
+                    }) { Text("清除", color = MaterialTheme.colorScheme.error) }
+                }
+            }
+        }
+    }
+
+    SettingsGroup {
+        SwitchRow(
+            index = 0, count = 1,
+            title = "自动传输预览图",
+            support = "同时自动传输缩略图和预览图，开启后会使预览传输速度变慢",
+            checked = SettingsRepo.autoPreviewFetch,
+            onCheckedChange = { SettingsRepo.updateAutoPreviewFetch(it) },
+        )
+    }
+    SettingsGroup {
+        SettingsRow(
+            index = 0, count = 2,
+            title = "缓存大小",
+            support = "图片缓存所能使用的最大空间",
+            leading = { IconCircle(MsIcon.NAV_FILES, IconTints.Accent) },
+        )
+        // ★ 用户定版：档位选择改用**连体变形选择框**（与"深浅色"同款 ConnectedButtonGroup）
+        Segment(index = 1, count = 2) {
+            val labels = SettingsRepo.CACHE_LIMIT_OPTIONS.map { SettingsRepo.formatCacheLimit(it) }
+            ConnectedButtonGroup(
+                options = labels,
+                selectedIndex = SettingsRepo.CACHE_LIMIT_OPTIONS
+                    .indexOf(SettingsRepo.cacheLimitBytes).coerceIn(0, labels.lastIndex),
+                onSelect = { i ->
+                    SettingsRepo.updateCacheLimitBytes(SettingsRepo.CACHE_LIMIT_OPTIONS[i])
+                },
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp),
+            )
+        }
+    }
+    SettingsGroup {
+        SettingsRow(
+            index = 0, count = 1,
+            title = "当前占用",
+            support = when {
+                usageBytes < 0 -> "统计中…"
+                else -> formatBytes(usageBytes)
+            },
+            leading = { IconCircle(MsIcon.GRID, IconTints.Accent) },
+            trailing = {
+                // 手动刷新一次占用（IconCircle 自身不吃 modifier，包一层 Box 承接点击）
+                // ★ 用户定版：**不要水波纹**（旧的方形高光太丑），只要**图标弹一下** ——
+                //   indication = null + 显式交互源，源同时喂给圆片里的图标
+                val refreshSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                Box(
+                    Modifier.clickable(
+                        interactionSource = refreshSrc,
+                        indication = null,
+                    ) { refreshUsage() },
+                ) {
+                    IconCircle(MsIcon.REFRESH, IconTints.Accent, source = refreshSrc)
+                }
+            },
+        )
+    }
+    SettingsGroup {
+        SettingsRow(
+            index = 0, count = 1,
+            title = "清除缓存",
+            support = "清除缩略图与预览图的缓存文件",
+            leading = { IconCircle(MsIcon.TRASH, IconTints.Accent) },
+            onClick = { showClearConfirm = true },
+        )
+    }
+}
+
+/** 字节数 → "x.x MB" / "xxx KB"。 */
+private fun formatBytes(n: Long): String = when {
+    n >= 1024L * 1024 * 1024 -> "%.1f GB".format(n / (1024.0 * 1024 * 1024))
+    n >= 1024L * 1024 -> "%.1f MB".format(n / (1024.0 * 1024))
+    n >= 1024L -> "%d KB".format(n / 1024)
+    else -> "$n B"
+}
+
 /** 二级页：外观。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -366,8 +505,14 @@ private fun AppearancePage() {
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .padding(start = 76.dp, end = 20.dp, top = 12.dp, bottom = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        // ★ 左右内边距必须**对称**（原来 start=76、end=20：左边为了对齐
+                        //   标签列留了 76dp，于是 4 颗色点整体偏左、右边空一大截 ——
+                        //   用户实测"四个颜色组合起来看不居中"）。
+                        //   改成左右各 20dp + SpaceEvenly：4 颗色点在这条宽度里等距铺开，
+                        //   组合的重心自然落在卡片中线上。
+                        .padding(horizontal = 20.dp)
+                        .padding(top = 12.dp, bottom = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Seeds.forEachIndexed { idx, seed ->
@@ -393,18 +538,16 @@ private fun AppearancePage() {
             leading = { IconCircle(MsIcon.CONTRAST, IconTints.Accent) },
         )
         Segment(index = 1, count = 2) {
-            Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp)) {
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    val options = listOf("跟随系统" to 0, "浅色" to 1, "深色" to 2)
-                    options.forEachIndexed { idx, (label, value) ->
-                        SegmentedButton(
-                            selected = SettingsRepo.darkMode == value,
-                            onClick = { SettingsRepo.updateDarkMode(value) },
-                            shape = SegmentedButtonDefaults.itemShape(idx, options.size),
-                        ) { Text(label, maxLines = 1) }
-                    }
-                }
-            }
+            // ★ MD3E **连体按钮组**（用户定版："会变形的那种"）：选中那颗形变成完整
+            //   药丸、其余保持小圆角、切换时圆角走弹簧 —— 老的 SingleChoiceSegmentedButton
+            //   是"选中项换底色 + 打勾"，没有形变。
+            val labels = listOf("跟随系统", "浅色", "深色")
+            ConnectedButtonGroup(
+                options = labels,
+                selectedIndex = SettingsRepo.darkMode.coerceIn(0, labels.lastIndex),
+                onSelect = { SettingsRepo.updateDarkMode(it) },
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp),
+            )
         }
     }
 }
@@ -425,7 +568,7 @@ private fun AboutPage(onNavigate: (SettingsPage) -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                "配套相机端 SonyConnect 2.0 使用\n开发者：BI2QFA",
+                "配套相机端 SonyConnect 2.6 使用\n开发者：BI2QFA",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -440,12 +583,12 @@ private fun AboutPage(onNavigate: (SettingsPage) -> Unit) {
         }
     }
 
-    // 打赏入口：单独一组（它不是"关于"正文的一部分，而是一个动作）
+    // 赞助入口：单独一组（它不是"关于"正文的一部分，而是一个动作）
     SettingsGroup {
         SettingsRow(
             index = 0, count = 1,
-            title = "打赏",
-            // 与打赏页里那句说明**同一句话**（用户改过措辞，两处一起改）
+            title = "赞助",
+            // 与赞助页里那句说明**同一句话**（用户改过措辞，两处一起改）
             support = "给开发者买杯咖啡吧",
             leading = { IconCircle(MsIcon.REWARD, IconTints.Accent) },
             trailing = { Chevron() },
@@ -455,7 +598,7 @@ private fun AboutPage(onNavigate: (SettingsPage) -> Unit) {
 }
 
 /**
- * 打赏页：一张 MD3E 圆角卡里放赞赏码。
+ * 赞助页：一张 MD3E 圆角卡里放赞赏码。
  *
  * ★ 两张码按**深浅色**换（用户给的两张图就是照这个做的：深色底那张给深色模式用）：
  *   判据直接取主题自己的 [useDarkTheme]（"跟随系统/浅色/深色"三态都收敛在它里面），
@@ -465,9 +608,11 @@ private fun AboutPage(onNavigate: (SettingsPage) -> Unit) {
 private fun RewardPage() {
     val dark = useDarkTheme()
     Column(Modifier.fillMaxSize()) {
-        SettingsGroup {
-            GroupCard {
-                Column(
+        // ★ 不要再套一层 SettingsGroup：`GroupCard` 内部**已经是** SettingsGroup
+        //   （16dp 横向边距 + 32dp 圆角）。套两层就是 32dp 边距、圆角也看着不一致 ——
+        //   用户实测"赞助页那两个卡片的 R 角和离屏幕边缘的距离要和别处统一"。
+        GroupCard {
+            Column(
                     Modifier.fillMaxWidth().padding(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -487,14 +632,86 @@ private fun RewardPage() {
                             .clip(RoundedCornerShape(CardCorner - 16.dp)),
                         contentScale = ContentScale.FillWidth,
                     )
-                    Text(
-                        "给开发者买杯咖啡吧",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Text(
+                    "给开发者买杯咖啡吧",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
+
+        // ★ 赞助用户列表（用户定版）：赞赏码下面**另开一张框**，框上写小标题，
+        //   内部**一行四个**。
+        //   · 小标题用与全应用同一枚 [SectionHeader]（字号/留白一致，不另写一套）；
+        //   · 框用同一枚 [GroupCard] → 圆角就是 [CardCorner]（32dp），
+        //     与设置页/主界面那些卡片完全一致（用户特别提醒"注意框的 r 角"）；
+        //   · 一行四个的"四个"用**等宽格子**保证：每个格子 weight(1f)，
+        //     现在有三位赞助者（strive. / 糖醋白鸽 / 经久鱼水情，**按赞助先后排序**），
+        //     第四个是空格子 —— 每个格子都在四分之一格里居中，
+        //     将来补到第四位时不会因为人数变化而整体位移。
+        SectionHeader("赞助用户列表")
+        GroupCard {
+            Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    SponsorCell(
+                        R.drawable.sponsor_strive, "strive. ",
+                    modifier = Modifier.weight(1f),
+                )
+                // ★ 2.7.0：新增两位赞助者 —— **按赞助先后排**（糖醋白鸽先，经久鱼水情后）
+                SponsorCell(
+                    R.drawable.sponsor_tangcu_baige, "糖醋白鸽",
+                    modifier = Modifier.weight(1f),
+                )
+                SponsorCell(
+                    R.drawable.sponsor_jingjiu_yushuiqing, "经久鱼水情",
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.weight(1f))
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+/**
+ * 赞助列表里的一格：**圆形头像 + 名字**（用户定版：名字放在圆形头像下面）。
+ *
+ * 头像固定 56dp、`ContentScale.Crop` 后按圆形裁剪 —— 原图是方的，不裁会露出四个角。
+ * 名字限一行、居中、超出省略（人名再长也不该把格子撑变形）。
+ */
+@Composable
+private fun SponsorCell(
+    @DrawableRes icon: Int,
+    name: String,
+    /** 由调用方（Row 里）传 `Modifier.weight(1f)` —— `weight` 是 RowScope 的扩展，
+     *  普通 composable 内部拿不到，必须从外面给。 */
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Image(
+            painterResource(icon),
+            contentDescription = name,
+            modifier = Modifier
+                .size(56.dp)
+                .clip(CircleShape),
+            contentScale = ContentScale.Crop,
+        )
+        Text(
+            name,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 

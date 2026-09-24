@@ -147,6 +147,18 @@ object Discovery {
                 if (sweep && foundByGuid.isEmpty()) {
                     val s0 = System.currentTimeMillis()
                     sendBroadcast(sock, localIp ?: gateway, request)
+                    // ★ 再打两遍"热点/多网卡"的广播（见 [tetheringBroadcasts] 的说明）：
+                    //   一遍用当前 socket（可能绑着 Wi-Fi 网络），一遍用**未绑定**的
+                    //   socket —— 手机做热点时，绑了网络的 socket 发不出/收不回走热点的包。
+                    val extra = (tetheringBroadcasts() + localSubnetBroadcasts()).distinct()
+                    if (extra.isNotEmpty()) {
+                        sendTo(sock, extra, request)
+                        DatagramSocket().use { raw ->
+                            raw.soTimeout = RECV_SLICE_MS
+                            sendTo(raw, extra, request)
+                            collect(raw, foundByGuid, FAST_TIMEOUT_MS, stopOnFirst = false)
+                        }
+                    }
                     collect(sock, foundByGuid, SWEEP_TIMEOUT_MS, stopOnFirst = false)
                     sweepMs = System.currentTimeMillis() - s0
                 }
@@ -307,6 +319,49 @@ object Discovery {
         val b = min(254, parts[2].toIntOrNull() ?: return emptyList())
         val prefix = "${parts[0]}.${parts[1]}.$b."
         return (1..254).map { prefix + it }
+    }
+
+    /**
+     * **手机自己做热点**时的探测目标（用户实测：这种接法下手机端扫不到相机）。
+     *
+     * <p>病根：[wifiEndpoints] 取的是 `WifiManager.dhcpInfo`，那是**station 侧**的
+     * DHCP 信息 —— 手机做热点时它要么是上一次连别人热点的陈旧值、要么是 0，
+     * 于是"已知地址快扫/子网广播//24 兜底"三个目标全算错；再加上探测 socket 被
+     * `bindSocket` 绑在 Wi-Fi 网络上，走热点的包根本收不到。结果就是扫不到。
+     *
+     * <p>解法刻意**不依赖热点网卡**（`ap0`/`wlan1` 这类接口对应用不可见）：
+     * 直接往"常见热点网段的**广播地址**"发包。内核按**直连路由**把它们从热点网卡
+     * 送出去（与默认路由无关），相机作为热点客户端收得到；它回包时发给本机在热点上的
+     * 地址，而我们那个**未绑定网络**的 socket 监听所有网卡，所以收得到。
+     * 每多一个网段只多一个几十字节的包，代价可忽略。
+     */
+    private fun tetheringBroadcasts(): List<String> = listOf(
+        // AOSP 默认热点网段（绝大多数机型，含小米/红米实测值）
+        "192.168.43.255",
+        // 厂商常用的另外几个：42/44 段、以及把热点放在 0/1 段的机型
+        "192.168.42.255",
+        "192.168.44.255",
+        "192.168.0.255",
+        "192.168.1.255",
+        "192.168.2.255",
+        "10.0.0.255",
+    )
+
+    /**
+     * 本机**所有网卡的 IPv4 子网广播地址**（含热点网卡，若它对应用可见）。
+     * 与 [tetheringBroadcasts] 互补：那条兜底"网卡不可见"，这条兜底"网段不是常见值"。
+     */
+    private fun localSubnetBroadcasts(): List<String> = try {
+        java.net.NetworkInterface.getNetworkInterfaces().toList()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { it.interfaceAddresses }
+            .mapNotNull { ia ->
+                val a = ia.address
+                if (a is java.net.Inet4Address) ia.broadcast?.hostAddress else null
+            }
+            .filter { it != null && it.isNotBlank() }
+    } catch (e: Throwable) {
+        emptyList()
     }
 
     /** Android DHCP 的 int 地址是小端：低字节在前。 */

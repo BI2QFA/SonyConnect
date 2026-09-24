@@ -58,7 +58,7 @@ static jstring clean_jstring(JNIEnv *env, const unsigned char *raw, int len)
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_bi2qfa_sonyconnect_NativeInfo_model(JNIEnv *env, jclass clazz)
+Java_io_github_bi2qfa_sonyconnect_NativeInfo_model(JNIEnv *env, jclass clazz)
 {
     (void) clazz;
     unsigned char buf[64];
@@ -69,7 +69,7 @@ Java_com_bi2qfa_sonyconnect_NativeInfo_model(JNIEnv *env, jclass clazz)
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_bi2qfa_sonyconnect_NativeInfo_serial(JNIEnv *env, jclass clazz)
+Java_io_github_bi2qfa_sonyconnect_NativeInfo_serial(JNIEnv *env, jclass clazz)
 {
     (void) clazz;
     unsigned char buf[16];
@@ -101,7 +101,7 @@ Java_com_bi2qfa_sonyconnect_NativeInfo_serial(JNIEnv *env, jclass clazz)
  * （真机上这条读路尚未跑过：相机不在线，见 devlog 的「未验证」一节。）
  */
 JNIEXPORT jstring JNICALL
-Java_com_bi2qfa_sonyconnect_NativeInfo_region(JNIEnv *env, jclass clazz)
+Java_io_github_bi2qfa_sonyconnect_NativeInfo_region(JNIEnv *env, jclass clazz)
 {
     (void) clazz;
 

@@ -164,6 +164,13 @@ public class MainActivity extends Activity {
     private static final String PREFS = "connect";
     private static final String KEY_MODE = "mode";
 
+    /**
+     * 本应用版本号（**日志与"关于"页共用一处**）。
+     * ★ 改版本时这里、{@code build.gradle} 与 {@code AndroidManifest} 三处要一起改
+     *   （相机端没有 PackageManager 可读的回环，所以只能靠人同步）。
+     */
+    public static final String APP_VERSION = PtpCodec.APP_VERSION;
+
     private SharedPreferences prefs;
     private final Handler handler = new Handler();
 
@@ -663,8 +670,10 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
         sInstance = this;
 
-        AppLog.i("Life", "onCreate：版本 " + DeviceInfo.getFirmwareVersion()
-                + " 界面 vc 见 build.gradle，sdk=" + Build.VERSION.SDK_INT);
+        AppLog.i("Life", "onCreate：SonyConnect " + APP_VERSION
+                + "，固件 " + DeviceInfo.getFirmwareVersion()
+                + "，协议 " + PtpCodec.formatProtoVersion(PtpIpServer.PROTO_VERSION)
+                + "，sdk=" + Build.VERSION.SDK_INT);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         savedMode = prefs.getString(KEY_MODE, null);
         AppLog.i("Life", "onCreate：上次连接方式=" + savedMode);
@@ -2167,8 +2176,8 @@ public class MainActivity extends Activity {
      */
     private void updateAboutText() {
         String id = pairingStore != null ? pairingStore.deviceIdHex() : null;
-        aboutTitle.setText("SonyConnect 2.0");
-        aboutMeta.setText("配套手机端 SonyConnect 2.0 使用\n开发者：BI2QFA");
+        aboutTitle.setText("SonyConnect " + APP_VERSION);
+        aboutMeta.setText("配套手机端 SonyConnect " + APP_VERSION + " 使用\n开发者：BI2QFA");
         aboutCode.setText("本机设备码：" + shortCode(id));
     }
 
@@ -2892,7 +2901,7 @@ public class MainActivity extends Activity {
         }
         if (ptpServer == null) {
             try {
-                PtpCameraHandler h = new PtpCameraHandler(getRootDir(), thumbPrefetcher,
+                final PtpCameraHandler h = new PtpCameraHandler(getRootDir(), thumbPrefetcher,
                         pairingStore, new CameraPlatform());
                 PtpIpServer s = new PtpIpServer(h);
                 s.setPairingHandler(h);
@@ -2900,6 +2909,20 @@ public class MainActivity extends Activity {
                 s.start();
                 ptpServer = s;
                 ptpHandler = h;
+                // ★ 2.6：进配对页**不等服务**（先亮"等待手机连接"），所以服务就绪时
+                //   可能界面早就停在配对页了 —— 这时补一次 pairingMode 上报，
+                //   否则相机在发现应答里带着"不可配对"出门，手机根本扫不到它。
+                final PtpCameraHandler handlerForUi = h;
+                handler.post(new Runnable() {
+                    public void run() {
+                        boolean onPairingPage = screen == SCR_PAIRING;
+                        handlerForUi.setPairingUiActive(onPairingPage);
+                        if (onPairingPage) {
+                            AppLog.i("Pair", "服务就绪时正停在配对页：补上 pairingMode（手机才扫得到）");
+                        }
+                    }
+                });
+                // 遥控拍摄：会话事件 → 事件连接推给手机 + 主线程刷界面让位 EE
                 RecSession.get().configure(getRootDir(), new RecSession.Listener() {
                     public void onRecEvent(int kind, int a, int b) {
                         PtpIpServer srv = ptpServer;

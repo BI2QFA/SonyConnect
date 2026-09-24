@@ -47,10 +47,14 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- 传输页点开已完成文件（应用目录通道走 FileProvider） -->
+        <!-- 传输页点开已完成文件（应用目录通道走 FileProvider）。
+             ★ authority 必须与代码里 `context.packageName + ".files"`（StorageSinks）取到的
+               值一致：写死旧包名会在改包名后失配 —— 表现为"点开已传输文件"静默失败
+               （getUriForFile 抛 IllegalArgumentException，被 runCatching 吞掉）。
+               用 ${applicationId} 占位符：包名再变也不失配，也不会与旧包名冲突安装。 -->
         <provider
             android:name="androidx.core.content.FileProvider"
-            android:authorities="com.bi2qfa.sonyconnect.files"
+            android:authorities="${applicationId}.files"
             android:exported="false"
             android:grantUriPermissions="true">
             <meta-data

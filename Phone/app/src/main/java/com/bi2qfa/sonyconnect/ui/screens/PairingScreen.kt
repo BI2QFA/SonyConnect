@@ -15,7 +15,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -24,20 +23,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.bi2qfa.sonyconnect.R
 import com.bi2qfa.sonyconnect.core.ConnectionCenter
 import com.bi2qfa.sonyconnect.ptpip.PairingClient
 import com.bi2qfa.sonyconnect.ui.FloatingNavInset
@@ -50,8 +46,10 @@ import com.bi2qfa.sonyconnect.ui.components.SettingsGroup
 import com.bi2qfa.sonyconnect.ui.components.SectionHeader
 import com.bi2qfa.sonyconnect.ui.components.SettingsRow
 import com.bi2qfa.sonyconnect.ui.theme.IconTints
-import kotlinx.coroutines.delay
 import com.bi2qfa.sonyconnect.ui.components.MsIcon
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.LoadingIndicator
 
 /**
  * **配对页**（用户定版：只保留配对模式，连接模式已删）。
@@ -107,24 +105,26 @@ fun PairingScreen() {
         }
 
         Box(Modifier.padding(horizontal = 16.dp, vertical = 20.dp)) {
-            // 扫描中：按钮内转圈 + "扫描中"动画点（与通知一致，1s 循环 . .. ...）
-            val dots = produceState(1) {
-                while (true) {
-                    delay(1000)
-                    value = value % 3 + 1
-                }
-            }
+            // 扫描中：按钮内是 MD3E 的 LoadingIndicator（会动的多边形），文字**不再跟着闪点**
+            // （用户定版：那三个点固定成 "..."，动的部分交给左边的指示器，别两处一起动）
             ExpressiveButton(
-                text = if (scanning) "扫描中" + ".".repeat(dots.value) else "扫描可配对相机",
+                text = if (scanning) "扫描中..." else "扫描可配对相机",
                 onClick = { ConnectionCenter.startPairingScan(context, force = true) },
                 modifier = Modifier.fillMaxWidth(),
                 // ★ 扫描中**保持可点**（用户定版）：新扫描要求会终止老扫描重新开始，
                 //   而不是没反应。禁止态让用户在扫描中途换条件时只能干等。
                 leadingIcon = {
                     if (scanning) {
-                        // 等待态用**旋转的进度圈**（用户定版：M3E 的 LoadingIndicator
-                        // 是变形多边形，看不出在转）——这里要的是一眼可辨的"转着呢"
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.5.dp)
+                        // 等待态 = **MD3E 的 LoadingIndicator**（会变形的多边形）——
+                        // 与主界面"正在连接"那处是同一件东西（用户定版：这才是要的那个图标）。
+                        //
+                        // ★ 必须显式给 color：它默认取 colorScheme.primary，而按钮底色本来就是
+                        //   primary —— 不指定的话它在这个按钮上是**隐形的**，用户看到的就是
+                        //   "图标不见了"（这正是之前那次"消失"的真正原因）。
+                        LoadingIndicator(
+                            modifier = Modifier.size(22.dp),
+                            color = LocalContentColor.current,
+                        )
                     } else {
                         MsIcon(
                             icon = MsIcon.REFRESH,
