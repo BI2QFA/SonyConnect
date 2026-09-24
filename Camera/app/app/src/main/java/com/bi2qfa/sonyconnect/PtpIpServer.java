@@ -837,7 +837,7 @@ public class PtpIpServer {
                 bucket.remove(this);
             }
             if (wasControl && connectedClientCount() == 0) {
-                RecSession.get().leave();
+                handler.recLeave();
             }
         }
 
@@ -1389,7 +1389,7 @@ public class PtpIpServer {
                     rspBool(tx, handler.recAf(false));
                     return true;
                 case PtpCodec.OP_ZOOM: {
-                    int dir = op.params.length > 0 ? op.params[0] : RecSession.ZOOM_STOP;
+                    int dir = op.params.length > 0 ? op.params[0] : -1;
                     int speed = op.params.length > 1 ? op.params[1] : 1;
                     rspBool(tx, handler.recZoom(dir, speed));
                     return true;

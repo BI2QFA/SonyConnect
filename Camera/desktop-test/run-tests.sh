@@ -17,7 +17,13 @@
 
 set -e
 
-JDK8="${A6300_JDK:-C:/Users/93849/AppData/Local/a6300-tools/jdk1.8.0_502}"
+if [ -n "${A6300_JDK:-}" ]; then
+    JDK8="$A6300_JDK"
+elif [ -n "${JAVA_HOME:-}" ]; then
+    JDK8="$JAVA_HOME"
+else
+    JDK8="C:/Users/93849/AppData/Local/a6300-tools/jdk1.8.0_502"
+fi
 JAVAC="$JDK8/bin/javac"
 JAVA="$JDK8/bin/java"
 
@@ -29,9 +35,17 @@ OUT="$HERE/build"
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
-echo "[1/5] 编译内核（Java 1.6 源码级，与相机端 build.gradle 一致）..."
+echo "[1/5] 编译内核（桌面用 Java 8 字节码；相机 APK 仍是 1.6）..."
 "$JAVAC" -version
-"$JAVAC" -source 1.6 -target 1.6 -Xlint:-options -encoding UTF-8 -d "$OUT" \
+STUB="$HERE/android-stub"
+"$JAVAC" -source 8 -target 8 -Xlint:-options -encoding UTF-8 -d "$OUT" \
+    "$STUB/android/hardware/Camera.java" \
+    "$STUB/android/graphics/ImageFormat.java" \
+    "$STUB/android/graphics/Rect.java" \
+    "$STUB/android/graphics/YuvImage.java" \
+    "$STUB/android/os/Build.java" \
+    "$STUB/android/util/Pair.java"
+"$JAVAC" -source 8 -target 8 -Xlint:-options -encoding UTF-8 -cp "$OUT" -d "$OUT" \
     "$PKG/FtpServer.java" \
     "$PKG/ThumbnailExtractor.java" \
     "$PKG/ThumbPrefetcher.java" \
@@ -40,6 +54,7 @@ echo "[1/5] 编译内核（Java 1.6 源码级，与相机端 build.gradle 一致
     "$PKG/AppLog.java" \
     "$PKG/PtpCodec.java" \
     "$PKG/PairingStore.java" \
+    "$PKG/RecSession.java" \
     "$PKG/PtpIpServer.java" \
     "$PKG/PtpCameraHandler.java"
 

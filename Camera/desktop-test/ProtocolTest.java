@@ -342,6 +342,36 @@ public class ProtocolTest {
         Client.Reply un = c.req(0x7FF0, null);
         check("未知操作码 → NOT_SUPPORTED", un.code == PtpCodec.RC_NOT_SUPPORTED);
 
+        Client.Reply recIn = c.req(PtpCodec.OP_REC_ENTER, null);
+        check("REC_ENTER 受理", recIn.code == PtpCodec.RC_OK && stub.recOn);
+        Client.Reply recSt = c.req(PtpCodec.OP_REC_GET_STATE, null);
+        check("REC_GET_STATE 含 active",
+                recSt.code == PtpCodec.RC_OK && contains(recSt.blob, "\"active\":true"));
+        Client.Reply lv = c.req(PtpCodec.OP_LV_START, null);
+        check("LV_START 回报端口",
+                lv.code == PtpCodec.RC_OK && lv.params != null
+                        && lv.params.length > 0 && lv.params[0] == 19999);
+        Client.Reply shot = c.req(PtpCodec.OP_SHOOT, null);
+        check("SHOOT 回报 PTP 路径",
+                shot.code == PtpCodec.RC_OK && contains(shot.blob, "/DCIM/DSC_REC.JPG"));
+        Client.Reply af = c.req(PtpCodec.OP_AF_HALF, null);
+        check("AF_HALF 受理", af.code == PtpCodec.RC_OK);
+        Client.Reply zm = c.req(PtpCodec.OP_ZOOM, new int[]{0, 1});
+        check("ZOOM TELE 受理", zm.code == PtpCodec.RC_OK && stub.recZoomDir == 0);
+        Client.Reply prop = c.reqBlob(PtpCodec.OP_SET_PROP, null, ascii("iso=200"));
+        check("SET_PROP iso=200",
+                prop.code == PtpCodec.RC_OK && "iso".equals(stub.recPropKey)
+                        && "200".equals(stub.recPropVal));
+        Client.Reply touch = c.req(PtpCodec.OP_TOUCH_AF, new int[]{500, 250});
+        check("TOUCH_AF 归一化坐标",
+                touch.code == PtpCodec.RC_OK
+                        && Math.abs(stub.recTouchX - 0.5f) < 0.01f
+                        && Math.abs(stub.recTouchY - 0.25f) < 0.01f);
+        Client.Reply mv = c.req(PtpCodec.OP_MOVIE_START, null);
+        check("MOVIE_START 受理", mv.code == PtpCodec.RC_OK);
+        Client.Reply recOut = c.req(PtpCodec.OP_REC_LEAVE, null);
+        check("REC_LEAVE 受理", recOut.code == PtpCodec.RC_OK && !stub.recOn);
+
         serverTail(server, c, stub, guid16, protoPort, filePort);
     }
 
@@ -1214,18 +1244,38 @@ public class ProtocolTest {
             lastThumbPaths = paths;
         }
 
-        public boolean recEnter() { return false; }
-        public void recLeave() {}
-        public byte[] recState() { return new byte[]{'{','}'}; }
-        public int recLvStart() { return -1; }
+        boolean recOn;
+        String recPropKey;
+        String recPropVal;
+        int recZoomDir = Integer.MIN_VALUE;
+        float recTouchX = -99f;
+        float recTouchY = -99f;
+
+        public boolean recEnter() { recOn = true; return true; }
+        public void recLeave() { recOn = false; }
+        public byte[] recState() {
+            return ascii("{\"active\":" + recOn + ",\"iso\":\"100\"}");
+        }
+        public int recLvStart() { return recOn ? 19999 : -1; }
         public void recLvStop() {}
-        public String recShoot() { return null; }
-        public boolean recAf(boolean on) { return false; }
-        public boolean recZoom(int dir, int speed) { return false; }
-        public boolean recSetProp(String key, String value) { return false; }
-        public boolean recTouchAf(float x, float y) { return false; }
-        public boolean recMovie(boolean start) { return false; }
-        public String recError() { return ""; }
+        public String recShoot() { return recOn ? "/DCIM/DSC_REC.JPG" : null; }
+        public boolean recAf(boolean on) { return recOn; }
+        public boolean recZoom(int dir, int speed) {
+            recZoomDir = dir;
+            return recOn;
+        }
+        public boolean recSetProp(String key, String value) {
+            recPropKey = key;
+            recPropVal = value;
+            return recOn;
+        }
+        public boolean recTouchAf(float x, float y) {
+            recTouchX = x;
+            recTouchY = y;
+            return recOn;
+        }
+        public boolean recMovie(boolean start) { return recOn; }
+        public String recError() { return recOn ? "" : "未进入遥控"; }
     }
 
     
