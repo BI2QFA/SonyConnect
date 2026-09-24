@@ -37,6 +37,7 @@ data class RecState(
     val expMode: String = "",
     val expModeAvail: List<String> = emptyList(),
     val selfTimer: String = "0",
+    val selfTimerAvail: List<String> = emptyList(),
 )
 
 object RecController {
@@ -52,6 +53,8 @@ object RecController {
     var preview by mutableStateOf<Bitmap?>(null)
         private set
     var lastShotPath by mutableStateOf<String?>(null)
+        private set
+    var postview by mutableStateOf<Bitmap?>(null)
         private set
 
     private var liveview: LiveviewClient? = null
@@ -85,6 +88,7 @@ object RecController {
         stopLiveview()
         sessionActive = false
         preview = null
+        postview = null
         if (h != null) {
             runCatching {
                 withContext(Dispatchers.IO) { ObjectRepository.recLeave(h) }
@@ -111,6 +115,15 @@ object RecController {
         try {
             val path = withContext(Dispatchers.IO) { ObjectRepository.recShoot(h) }
             lastShotPath = path
+            if (path.isNotBlank()) {
+                val jpeg = withContext(Dispatchers.IO) {
+                    ObjectRepository.fetchVirtualPreview(h, path)
+                        ?: ObjectRepository.fetchVirtualThumb(h, path)
+                }
+                if (jpeg != null) {
+                    postview = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+                }
+            }
             refresh()
         } catch (t: Throwable) {
             error = t.message
@@ -169,11 +182,16 @@ object RecController {
         }
     }
 
+    fun dismissPostview() {
+        postview = null
+    }
+
     fun reset() {
         stopLiveview()
         sessionActive = false
         busy = false
         preview = null
+        postview = null
         host = null
         rec = RecState()
     }
@@ -237,6 +255,7 @@ object RecController {
         expMode = o.optString("expMode"),
         expModeAvail = strList(o, "expModeAvail"),
         selfTimer = o.optString("selfTimer", "0"),
+        selfTimerAvail = strList(o, "selfTimerAvail"),
     )
 
     private fun strList(o: JSONObject, key: String): List<String> {

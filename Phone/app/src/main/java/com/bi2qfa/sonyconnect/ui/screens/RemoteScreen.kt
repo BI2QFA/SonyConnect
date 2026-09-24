@@ -52,6 +52,7 @@ fun RemoteScreen(onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     val rec = RecController.rec
     val preview = RecController.preview
+    val postview = RecController.postview
     val busy = RecController.busy
     val err = RecController.error
 
@@ -69,7 +70,16 @@ fun RemoteScreen(onClose: () -> Unit) {
             .fillMaxSize()
             .background(Color.Black),
     ) {
-        if (preview != null) {
+        if (postview != null) {
+            Image(
+                bitmap = postview.asImageBitmap(),
+                contentDescription = "回看",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable { RecController.dismissPostview() },
+            )
+        } else if (preview != null) {
             Image(
                 bitmap = preview.asImageBitmap(),
                 contentDescription = "实时取景",
@@ -160,6 +170,9 @@ fun RemoteScreen(onClose: () -> Unit) {
                     PropChip("模式", rec.expMode, rec.expModeAvail) {
                         scope.launch { RecController.setProp("expMode", it) }
                     }
+                    PropChip("自拍", rec.selfTimer, rec.selfTimerAvail) {
+                        scope.launch { RecController.setProp("selfTimer", it) }
+                    }
                 }
 
                 Row(
@@ -167,8 +180,8 @@ fun RemoteScreen(onClose: () -> Unit) {
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    FilledTonalButton(onClick = { scope.launch { RecController.zoom(1) } }) {
-                        Text("W")
+                    ZoomHold("W") {
+                        scope.launch { RecController.zoom(1) }
                     }
                     MovieButton(recording = rec.recording, enabled = !busy) {
                         scope.launch { RecController.movie(!rec.recording) }
@@ -180,15 +193,34 @@ fun RemoteScreen(onClose: () -> Unit) {
                     }, onShoot = {
                         scope.launch { RecController.shoot() }
                     })
-                    FilledTonalButton(onClick = { scope.launch { RecController.zoom(-1) } }) {
-                        Text("停")
-                    }
-                    FilledTonalButton(onClick = { scope.launch { RecController.zoom(0) } }) {
-                        Text("T")
+                    ZoomHold("T") {
+                        scope.launch { RecController.zoom(0) }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ZoomHold(label: String, onHold: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val armed = remember { androidx.compose.runtime.mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(pressed) {
+        if (pressed) {
+            armed.value = true
+            onHold()
+        } else if (armed.value) {
+            scope.launch { RecController.zoom(-1) }
+        }
+    }
+    FilledTonalButton(
+        onClick = {},
+        interactionSource = interaction,
+    ) {
+        Text(label)
     }
 }
 
