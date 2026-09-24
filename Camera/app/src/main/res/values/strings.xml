@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">SonyConnect</string>
+    <string name="rec_hint">遥控拍摄中 · 菜单键退出</string>
 </resources>

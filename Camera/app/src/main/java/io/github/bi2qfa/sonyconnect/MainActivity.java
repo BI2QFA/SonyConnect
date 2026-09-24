@@ -340,6 +340,10 @@ public class MainActivity extends Activity {
     // 视图
     private View screenMain, screenMenu, screenMode, screenAbout, screenPairing, screenPaired,
             screenLog, dlgConfirm, dlgDefault, dlgExiting;
+    /** 遥控拍摄：全屏取景面（SurfaceView 管线，A7R2 实测定版）+ 一行提示 */
+    private android.view.SurfaceView recSurface;
+    private TextView recHint;
+    private boolean recChromeOn = false;
     private TextView statusView, confirmMsg, qrCaption, exitMsgView;
     /** 关于页三块（用户要求拆开）：① 应用名+版本 ② 配套版本提示+开发者 ③ 本机设备码 */
     private TextView aboutTitle, aboutMeta, aboutCode;
@@ -695,6 +699,28 @@ public class MainActivity extends Activity {
         dlgConfirm = findViewById(R.id.dlg_exit);
         dlgDefault = findViewById(R.id.dlg_default);
         dlgExiting = findViewById(R.id.dlg_exiting);
+
+        // 遥控拍摄取景面（A7R2 实测定版的 SurfaceView 管线）：表面可见时把
+        // SurfaceHolder 交给 RecSession 去做 setPreviewDisplay + startPreview
+        recSurface = (android.view.SurfaceView) findViewById(R.id.rec_surface);
+        recHint = (TextView) findViewById(R.id.rec_hint);
+        android.view.SurfaceHolder recHolder = recSurface.getHolder();
+        try {
+            recHolder.setType(android.view.SurfaceHolder.SURFACE_TYPE_PUSH_BUFFERS);
+        } catch (Throwable t) {
+        }
+        recHolder.addCallback(new android.view.SurfaceHolder.Callback() {
+            public void surfaceCreated(android.view.SurfaceHolder h) {
+                RecSession.get().surfaceCreated(h);
+            }
+
+            public void surfaceChanged(android.view.SurfaceHolder h, int format, int w, int hh) {
+            }
+
+            public void surfaceDestroyed(android.view.SurfaceHolder h) {
+                RecSession.get().surfaceDestroyed();
+            }
+        });
 
         statusView = (TextView) findViewById(R.id.status_view);
         // 顶栏是 include，电量控件在各自子树里，统一遍历刷新（见 updateBattery）
@@ -3660,12 +3686,30 @@ public class MainActivity extends Activity {
     }
 
     private void applyRecChrome() {
-        if (screenMain == null) {
+        if (screenMain == null || recSurface == null) {
             return;
         }
         boolean rec = RecSession.get().isActive();
-        if (screen == SCR_MAIN) {
-            screenMain.setVisibility(rec ? View.GONE : View.VISIBLE);
+        if (rec == recChromeOn) {
+            return;
+        }
+        recChromeOn = rec;
+        // ★ 遥控时相机 LCD 必须显示实时取景 —— 靠布局里那块 SurfaceView 渲染
+        //   （recipe-lab-sony-pmca 管线），不是把界面藏掉等系统 EE（那是黑屏）。
+        //   进入：正常界面全部撤下、取景面亮起；退出：取景面收起、回到来时的屏。
+        recSurface.setVisibility(rec ? View.VISIBLE : View.GONE);
+        recHint.setVisibility(rec ? View.VISIBLE : View.GONE);
+        if (rec) {
+            View[] screens = {screenMain, screenMenu, screenMode, screenAbout,
+                    screenPairing, screenPaired, screenLog,
+                    dlgConfirm, dlgDefault, dlgExiting};
+            for (int i = 0; i < screens.length; i++) {
+                if (screens[i] != null) {
+                    screens[i].setVisibility(View.GONE);
+                }
+            }
+        } else {
+            showScreen(screen);
         }
     }
 

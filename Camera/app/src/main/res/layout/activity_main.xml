@@ -23,6 +23,32 @@
     android:layout_height="match_parent"
     android:background="#ff000000">
 
+    <!-- ===================== 遥控拍摄取景面 =====================
+         recipe-lab-sony-pmca 在 A7R2 上验证过的管线：CameraEx.open(0,null) →
+         getNormalCamera() → surfaceCreated 里 setPreviewDisplay(本面)+startPreview()。
+         相机 LCD 上显示实时取景靠的是这块 SurfaceView，不是系统 EE —— 所以遥控时
+         必须把它亮出来（applyRecChrome），而不是像之前那样只把界面藏掉留一个黑窗。 -->
+    <SurfaceView android:id="@+id/rec_surface"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <!-- 遥控时仅剩的一行提示（叠在取景面上） -->
+    <TextView android:id="@+id/rec_hint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="16px"
+        android:background="#aa000000"
+        android:paddingLeft="14px"
+        android:paddingRight="14px"
+        android:paddingTop="4px"
+        android:paddingBottom="4px"
+        android:text="@string/rec_hint"
+        android:textColor="#ffffffff"
+        android:textSize="15sp"
+        android:visibility="gone" />
+
     <!-- ===================== 主界面 =====================
          顶栏 66 + 正文 362 + 底栏 52 = 480，整幅 640 宽。
          顶栏用水平 LinearLayout + gravity=center_vertical：应用图标与标题**结构上**

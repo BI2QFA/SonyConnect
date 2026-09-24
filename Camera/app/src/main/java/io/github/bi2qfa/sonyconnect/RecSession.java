@@ -4,8 +4,8 @@ import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.graphics.YuvImage;
 import android.hardware.Camera;
-import android.os.Build;
 import android.util.Pair;
+import android.view.SurfaceHolder;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -21,7 +21,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -73,6 +72,7 @@ public final class RecSession {
     private final AtomicBoolean encoding = new AtomicBoolean(false);
     private int previewW;
     private int previewH;
+    private SurfaceHolder previewHolder;
 
     private final Object shotLock = new Object();
     private CountDownLatch shotLatch;
@@ -115,14 +115,14 @@ public final class RecSession {
             }
             lastError = "";
             try {
+                // ★ A7R2 实测定版：OpenOptions 必须传 null —— 之前那套
+                //   setPreview(true)/setInheritSetting/setRecordingMode(0) 自造组合
+                //   打开后相机 HAL 不出帧（LCD 全黑、快门无响应）。recipe-lab-sony-pmca
+                //   在真机上验证过的就是 open(0, null)。
                 cameraExClass = Class.forName("com.sony.scalar.hardware.CameraEx");
                 Class<?> optionsCl = Class.forName("com.sony.scalar.hardware.CameraEx$OpenOptions");
-                Object options = optionsCl.getConstructor().newInstance();
-                invokeSilent(options, "setPreview", new Class[]{boolean.class}, new Object[]{Boolean.TRUE});
-                invokeSilent(options, "setInheritSetting", new Class[]{boolean.class}, new Object[]{Boolean.TRUE});
-                invokeSilent(options, "setRecordingMode", new Class[]{int.class}, new Object[]{Integer.valueOf(0)});
                 Method open = cameraExClass.getMethod("open", int.class, optionsCl);
-                cameraEx = open.invoke(null, Integer.valueOf(0), options);
+                cameraEx = open.invoke(null, Integer.valueOf(0), null);
                 if (cameraEx == null) {
                     lastError = "CameraEx.open 返回 null";
                     return false;
@@ -133,19 +133,48 @@ public final class RecSession {
                 }
                 bindListeners();
                 readLens();
-                startPreviewPipeline();
                 active = true;
                 focusStatus = "idle";
                 recording = false;
                 recSeconds = 0;
                 AppLog.i("Rec", "遥控会话已打开");
                 emit(EV_PROP, 1, 0);
+                // 取景面若已经活着（快速重进），直接把预览接上去
+                if (previewHolder != null) {
+                    startPreviewToHolder(previewHolder);
+                }
                 return true;
             } catch (Throwable t) {
                 lastError = shortErr(t);
                 AppLog.w("Rec", "enter 失败: " + lastError);
                 releaseQuiet();
                 return false;
+            }
+        }
+    }
+
+    /**
+     * 取景面就绪（MainActivity 的 SurfaceView 变为可见时回调进来）。
+     * recipe-lab-sony-pmca 的管线：setPreviewDisplay(真实 SurfaceHolder) 后 startPreview，
+     * 相机 LCD 才会渲染实时取景 —— 之前用离屏 SurfaceTexture(0) 的写法在 A7R2 上一帧不出。
+     */
+    public void surfaceCreated(SurfaceHolder h) {
+        synchronized (lock) {
+            previewHolder = h;
+            if (active && camera != null) {
+                startPreviewToHolder(h);
+            }
+        }
+    }
+
+    public void surfaceDestroyed() {
+        synchronized (lock) {
+            previewHolder = null;
+            if (camera != null) {
+                try {
+                    camera.stopPreview();
+                } catch (Throwable t) {
+                }
             }
         }
     }
@@ -201,7 +230,7 @@ public final class RecSession {
 
     public String shoot() {
         synchronized (lock) {
-            if (!active || cameraEx == null) {
+            if (!active || camera == null) {
                 lastError = "未进入遥控";
                 return null;
             }
@@ -210,62 +239,106 @@ public final class RecSession {
                 return null;
             }
         }
+        // 拍前快照 DCIM 最新文件：结果兜底靠"出现了比它新的文件"来判定
+        File dcim = rootDir == null ? null : new File(rootDir, "DCIM");
+        File newestBefore = newestUnder(dcim, 0);
+        long shotAt = System.currentTimeMillis();
         synchronized (shotLock) {
             shotPath = null;
             shotJpeg = null;
             shotLatch = new CountDownLatch(1);
         }
-        try {
-            boolean ok = false;
-            synchronized (lock) {
-                ok = invokeSilent(cameraEx, "burstableTakePicture", null, null);
-                if (!ok && camera != null) {
-                    try {
-                        camera.takePicture(null, null, new Camera.PictureCallback() {
-                            public void onPictureTaken(byte[] data, Camera c) {
-                                onJpeg(data);
-                                restartPreviewQuiet();
-                            }
-                        });
-                        ok = true;
-                    } catch (Throwable t) {
-                        lastError = shortErr(t);
+        boolean fired = false;
+        synchronized (lock) {
+            // ★ A7R2 实测定版：标准 camera1 快门 takePicture(null,null,null) ——
+            //   相机走自己的拍照-存卡管线（和机身快门一致）。之前用的
+            //   burstableTakePicture() 在真机上从未触发（拍照超时的根因）。
+            try {
+                camera.takePicture(null, null, null);
+                fired = true;
+            } catch (Throwable t) {
+                AppLog.w("Rec", "takePicture: " + shortErr(t));
+            }
+            if (!fired) {
+                // 兜底：个别机型不认标准路径时再试 CameraEx 的私有快门
+                fired = invokeSilent(cameraEx, "burstableTakePicture", null, null);
+                if (!fired) {
+                    lastError = "快门未被相机接受";
+                    return null;
+                }
+            }
+        }
+        String result = null;
+        long deadline = System.currentTimeMillis() + 20000;
+        while (result == null && System.currentTimeMillis() < deadline) {
+            // 路径一：StoreImageCompleteListener / JpegListener 点亮了 latch（精确文件名）
+            synchronized (shotLock) {
+                if (shotLatch.getCount() == 0) {
+                    String ptp = toPtpPath(shotPath);
+                    if (ptp == null && shotJpeg != null && shotJpeg.length > 0) {
+                        ptp = toPtpPath(dumpJpeg(shotJpeg));
+                    }
+                    if (ptp != null && ptp.length() > 0) {
+                        result = ptp;
                     }
                 }
             }
-            if (!ok) {
-                return null;
-            }
-            CountDownLatch latch;
-            synchronized (shotLock) {
-                latch = shotLatch;
-            }
-            latch.await(20, TimeUnit.SECONDS);
-            synchronized (shotLock) {
-                String ptp = toPtpPath(shotPath);
-                if (ptp == null && shotPath != null) {
-                    ptp = shotPath;
-                }
-                if (ptp == null && shotJpeg != null && shotJpeg.length > 0) {
-                    File dumped = dumpJpeg(shotJpeg);
-                    ptp = toPtpPath(dumped);
-                }
-                if (ptp != null && ptp.length() > 0) {
-                    lastShotPath = ptp;
-                    emit(EV_SHOT, 1, 0);
-                    restartPreviewQuiet();
-                    return ptp;
+            if (result == null) {
+                // 路径二：DCIM 轮询 —— 监听不可用的机型上，新落盘的文件就是答案
+                File nf = newestUnder(dcim, 0);
+                if (nf != null && !nf.equals(newestBefore) && nf.lastModified() >= shotAt - 2000) {
+                    String ptp = toPtpPath(nf);
+                    if (ptp != null) {
+                        result = ptp;
+                        synchronized (shotLock) {
+                            shotPath = nf.getAbsolutePath();
+                        }
+                    }
                 }
             }
-            lastError = "拍照超时";
-            return null;
-        } catch (InterruptedException e) {
-            lastError = "拍照中断";
-            return null;
-        } catch (Throwable t) {
-            lastError = shortErr(t);
+            if (result == null) {
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+        }
+        restartPreviewQuiet();
+        if (result != null) {
+            lastShotPath = result;
+            emit(EV_SHOT, 1, 0);
+            return result;
+        }
+        lastError = "拍照超时";
+        return null;
+    }
+
+    /** DCIM 下（限深）最新修改的普通文件；用于拍照结果的兜底发现。 */
+    private File newestUnder(File dir, int depth) {
+        if (dir == null || depth > 3 || !dir.isDirectory()) {
             return null;
         }
+        File best = null;
+        long bestM = 0;
+        File[] fs = dir.listFiles();
+        if (fs == null) {
+            return null;
+        }
+        for (int i = 0; i < fs.length; i++) {
+            File f = fs[i];
+            if (f.isDirectory()) {
+                File sub = newestUnder(f, depth + 1);
+                if (sub != null && sub.lastModified() > bestM) {
+                    bestM = sub.lastModified();
+                    best = sub;
+                }
+            } else if (f.lastModified() > bestM) {
+                bestM = f.lastModified();
+                best = f;
+            }
+        }
+        return best;
     }
 
     public boolean halfPress(boolean on) {
@@ -487,9 +560,14 @@ public final class RecSession {
         }
     }
 
-    private void startPreviewPipeline() {
-        if (camera == null) {
+    private void startPreviewToHolder(SurfaceHolder holder) {
+        if (camera == null || holder == null) {
             return;
+        }
+        try {
+            camera.setPreviewDisplay(holder);
+        } catch (Throwable t) {
+            AppLog.w("Rec", "setPreviewDisplay: " + shortErr(t));
         }
         try {
             Camera.Parameters p = camera.getParameters();
@@ -513,16 +591,9 @@ public final class RecSession {
         } catch (Throwable t) {
             AppLog.w("Rec", "预览参数: " + shortErr(t));
         }
-        if (Build.VERSION.SDK_INT >= 11) {
-            try {
-                Class<?> stCl = Class.forName("android.graphics.SurfaceTexture");
-                Object st = stCl.getConstructor(int.class).newInstance(Integer.valueOf(0));
-                Method setTex = Camera.class.getMethod("setPreviewTexture", stCl);
-                setTex.invoke(camera, st);
-            } catch (Throwable t) {
-            }
-        }
         try {
+            // 取景回调与显示共存（camera1 语义）：LCD 显示走 SurfaceView，
+            // 手机 liveview 走 NV21 帧 → YUV→JPEG
             camera.setPreviewCallback(new Camera.PreviewCallback() {
                 public void onPreviewFrame(byte[] data, Camera cam) {
                     enqueueJpeg(data);
@@ -533,6 +604,7 @@ public final class RecSession {
         }
         try {
             camera.startPreview();
+            AppLog.i("Rec", "预览已启动 " + previewW + "x" + previewH);
         } catch (Throwable t) {
             AppLog.w("Rec", "startPreview: " + shortErr(t));
         }
@@ -1056,6 +1128,10 @@ public final class RecSession {
         if (camera == null) {
             return;
         }
+        // 拍照会停预览（camera1 语义）；取景面还挂着才需要重启
+        if (previewHolder == null) {
+            return;
+        }
         try {
             camera.startPreview();
         } catch (Throwable t) {
@@ -1076,6 +1152,7 @@ public final class RecSession {
             }
             camera = null;
         }
+        previewHolder = null;
         if (cameraEx != null) {
             invokeSilent(cameraEx, "release", null, null);
             cameraEx = null;
