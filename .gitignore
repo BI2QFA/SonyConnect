@@ -29,6 +29,10 @@ native/ndk-libs/
 Camera/app/native/ndk-out/
 Camera/app/native/ndk-libs/
 
+# macOS 无 gradle 构建链（build_cam_mac.sh）的中间产物与签名附带文件
+Camera/app/build_out_mac/
+*.idsig
+
 # 工具缓存与本地诊断产物
 __pycache__/
 *.pyc
