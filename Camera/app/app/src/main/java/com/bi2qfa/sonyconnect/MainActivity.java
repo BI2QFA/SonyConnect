@@ -218,6 +218,7 @@ public class MainActivity extends Activity {
             
             
             refreshCameraIcon();
+            applyRecChrome();
             handler.postDelayed(this, 1000);
         }
     };
@@ -891,6 +892,15 @@ public class MainActivity extends Activity {
                 + ") keyCode=" + keyCode + " screen=" + screen);
         if (shuttingDown) {
             return true; 
+        }
+        if (RecSession.get().isActive()) {
+            int scan = event.getScanCode();
+            if (scan == ScalarInput.ISV_KEY_MENU || scan == ScalarInput.ISV_KEY_DELETE) {
+                RecSession.get().leave();
+                applyRecChrome();
+                updateMainStatus();
+            }
+            return true;
         }
         switch (event.getScanCode()) {
             case ScalarInput.ISV_KEY_MENU:
@@ -2515,6 +2525,11 @@ public class MainActivity extends Activity {
                         if (srv != null) {
                             srv.pushEvent(PtpCodec.EV_REC, 0, new int[]{kind, a, b});
                         }
+                        handler.post(new Runnable() {
+                            public void run() {
+                                applyRecChrome();
+                            }
+                        });
                     }
                 });
             } catch (IOException e) {
@@ -3203,6 +3218,17 @@ public class MainActivity extends Activity {
         mainBlockQr.setVisibility(mainBlock == 1 ? View.VISIBLE : View.GONE);
         mainBlockStatus.setVisibility(mainBlock == 2 ? View.VISIBLE : View.GONE);
         updateQrCode();
+        applyRecChrome();
+    }
+
+    private void applyRecChrome() {
+        if (screenMain == null) {
+            return;
+        }
+        boolean rec = RecSession.get().isActive();
+        if (screen == SCR_MAIN) {
+            screenMain.setVisibility(rec ? View.GONE : View.VISIBLE);
+        }
     }
 
     

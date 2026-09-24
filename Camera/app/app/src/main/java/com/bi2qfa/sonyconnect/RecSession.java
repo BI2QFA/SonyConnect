@@ -58,8 +58,9 @@ public final class RecSession {
     private String lastError = "";
     private String lens = "";
     private String focusStatus = "idle";
-    private boolean recording;
-    private int recSeconds;
+    private volatile boolean recording;
+    private volatile int recSeconds;
+    private Thread recTicker;
     private String lastShotPath = "";
 
     private Class<?> cameraExClass;
@@ -138,6 +139,7 @@ public final class RecSession {
                 recording = false;
                 recSeconds = 0;
                 AppLog.i("Rec", "遥控会话已打开");
+                emit(EV_PROP, 1, 0);
                 return true;
             } catch (Throwable t) {
                 lastError = shortErr(t);
@@ -165,6 +167,7 @@ public final class RecSession {
             active = false;
             focusStatus = "idle";
             AppLog.i("Rec", "遥控会话已关闭");
+            emit(EV_PROP, 0, 0);
         }
     }
 
@@ -982,6 +985,7 @@ public final class RecSession {
                 recording = true;
                 recSeconds = 0;
                 emit(EV_MOVIE, 1, 0);
+                startRecTicker();
                 return true;
             } catch (Throwable t) {
                 lastError = shortErr(t);
@@ -993,14 +997,35 @@ public final class RecSession {
         if (!recording && mediaRecorder == null) {
             return true;
         }
+        recording = false;
         try {
             invokeSilent(mediaRecorder, "stop", null, null);
         } catch (Throwable t) {
         }
         releaseRecorder();
-        recording = false;
         emit(EV_MOVIE, 0, recSeconds);
         return true;
+    }
+
+    private void startRecTicker() {
+        recTicker = new Thread(new Runnable() {
+            public void run() {
+                while (recording) {
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    if (!recording) {
+                        return;
+                    }
+                    recSeconds++;
+                    emit(EV_MOVIE, 1, recSeconds);
+                }
+            }
+        }, "rec-time");
+        recTicker.setDaemon(true);
+        recTicker.start();
     }
 
     private void releaseRecorder() {
