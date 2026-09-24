@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-
-
-
-
-
-
-
+<!--
+  只留 window_dark（values/ 与 values-night/ 的 themes.xml 都用它当 windowBackground，
+  用来消掉冷启动那一帧白闪）。
+  ★ 其余五条已按"零引用即删"清掉：seed_blue/purple/green/amber 那四个色在 Palette.kt 里
+    是以字面量 Color(0xFF…) 写的（主题色板走代码不走资源，见 Palette.kt 的 tonal 说明），
+    window_light 则在两套主题里都没被用过（浅色主题用的也是 window_dark）。
+-->
 <resources>
     <color name="window_dark">#FF0B0B0D</color>
 </resources>

@@ -1,17 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-
-
-
+<!--
+  download（Material Symbols Outlined，Apache-2.0）
+  ★ 由 tools/fetch_ms_icons.py 生成，**不要手改**：重跑脚本会覆盖。
+     要换图标就改脚本里的 ICONS 映射再重跑。
+  ★ 坐标：官方是 960 网格 / Y 轴向上为负，这里用 viewport 960 + translateY(960)
+     平移成 Y 轴向下，路径数据与官方逐字节一致（便于日后与上游对账）。
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="2.2"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:pathData="M12,3.4 L12,14.6 M7.4,10.4 L12,14.9 L16.6,10.4 M4.8,17.4 L4.8,18.6 C4.8,19.9 5.9,21 7.2,21 L16.8,21 C18.1,21 19.2,19.9 19.2,18.6 L19.2,17.4" />
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <group android:translateY="960">
+        <path
+            android:fillColor="#FF000000"
+            android:pathData="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z" />
+    </group>
 </vector>

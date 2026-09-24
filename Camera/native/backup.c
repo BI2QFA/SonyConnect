@@ -1,0 +1,60 @@
+/*
+ * Backup 驱动访问（原样移植自 OpenMemories-Platform drivers/backup.c，
+ * 仅保留只读所需的 get_datasize / read 两条消息）。
+ */
+#include <stdarg.h>
+#include <string.h>
+
+#include "backup.h"
+#include "osal_uipc.h"
+
+#define OSAL_MSG_BACKUP 0x3E014D
+
+struct backup_msg {
+    int function;
+    int result;
+    int arg_count;
+    int type;
+    int padding[2];
+    int args[10];
+};
+
+static int backup_sync_msg(int function, int arg_count, ...)
+{
+    int errno;
+
+    struct backup_msg *msg;
+    errno = osal_valloc_msg_wait(OSAL_MSG_BACKUP, (void **) &msg, sizeof(struct backup_msg), 1);
+    if (errno) return -1;
+
+    memset(msg, 0, sizeof(struct backup_msg));
+    msg->function = function;
+    msg->arg_count = arg_count;
+    msg->type = OSAL_MSG_BACKUP;
+
+    va_list ap;
+    va_start(ap, arg_count);
+    for (int i = 0; i < arg_count; i++)
+        msg->args[i] = va_arg(ap, int);
+    va_end(ap);
+
+    errno = osal_snd_sync_msg(OSAL_MSG_BACKUP, msg);
+    if (errno) return -1;
+
+    int result = msg->result;
+
+    errno = osal_free_msg(OSAL_MSG_BACKUP, msg);
+    if (errno) return -1;
+
+    return result;
+}
+
+int Backup_get_datasize(int id)
+{
+    return backup_sync_msg(0, 1, id);
+}
+
+int Backup_read(int id, void *addr)
+{
+    return backup_sync_msg(3, 2, id, addr);
+}

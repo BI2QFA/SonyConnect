@@ -1,0 +1,111 @@
+    // ===== 关机接管自诊断（**临时**：定位"接管没生效"用，查清后整段删掉）=====
+    //
+    // 相机上没有 adb，系统服务那行 Slog.d("DAConnectionManagerService", "className = ...")
+    // 看不到。所以把决定性的事实印在关于页上：
+    //   · 阀门组件到底启用没有（getComponentEnabledSetting 回读）
+    //   · 装它的时候有没有报错
+    //   · **用系统服务那条一模一样的查询在本机跑一遍**，看命中的是谁、priority 多少
+    //     ← 最关键的一条：它直接回答"我们到底有没有资格参与那次招标"
+    //   · 有没有真的收到过关机接管（阀门把 off-factor 递过来的时刻）
+    //   · 最近一次 onPause（以及当时阀门装没装上）
+    // 全部同步 commit 落 prefs：这些事件都发生在关机过程里，必须立刻落盘，
+    // 否则下次开机读到的是空的。
+
+    private static final String DBG_GATE = "dbg_gate";
+    private static final String DBG_QUERY = "dbg_query";
+    private static final String DBG_HOLD = "dbg_hold";
+    private static final String DBG_PAUSE = "dbg_pause";
+
+    /** 同步落一条诊断（commit 而不是 apply：关机随时可能切电）。 */
+    private static void dbg(Context c, String key, String val) {
+        try {
+            c.getSharedPreferences(PREFS, MODE_PRIVATE)
+                    .edit().putString(key, val).commit();
+        } catch (Throwable t) {
+        }
+    }
+
+    private static String dbgGet(Context c, String key) {
+        try {
+            String v = c.getSharedPreferences(PREFS, MODE_PRIVATE).getString(key, null);
+            return v == null ? "—" : v;
+        } catch (Throwable t) {
+            return "?";
+        }
+    }
+
+    private static String dbgNow() {
+        try {
+            return new java.text.SimpleDateFormat("MM-dd HH:mm:ss")
+                    .format(new java.util.Date());
+        } catch (Throwable t) {
+            return String.valueOf(System.currentTimeMillis());
+        }
+    }
+
+    /** 阀门组件当前状态回读：0=默认(启用) 1=启用 2=禁用 3=用户禁用。 */
+    private String gateStateText() {
+        try {
+            return String.valueOf(getPackageManager()
+                    .getComponentEnabledSetting(PowerOffGateActivity.COMPONENT));
+        } catch (Throwable t) {
+            return "err";
+        }
+    }
+
+    /**
+     * **复刻系统服务那条查询**，看本机 PackageManager 会不会把我们解析出来。
+     *
+     * <p>与 {@code DAConnectionManagerService.smali:1433-1456} 逐字一致：同一条
+     * action + category，flags 传 0。系统服务拿 {@code get(0)} 当认领者，所以这里把
+     * 命中数与前两名的 包名/priority 都记下来 —— 首位不是我们就是"输了招标"，
+     * 命中 0 就是"根本解析不到"。
+     */
+    private String runClaimQuery() {
+        try {
+            Intent probe = new Intent(
+                    "com.android.server.DAConnectionManagerService.action.LAUNCH_ACTIVITY_ON_SUSPEND");
+            probe.addCategory(
+                    "com.android.server.DAConnectionManagerService.category.LAUNCH_ACTIVITY_ON_SUSPEND");
+            java.util.List<android.content.pm.ResolveInfo> hits =
+                    getPackageManager().queryIntentActivities(probe, 0);
+            if (hits == null || hits.isEmpty()) {
+                return "命中0（解析不到）";
+            }
+            StringBuilder sb = new StringBuilder("命中" + hits.size() + " ");
+            for (int i = 0; i < hits.size() && i < 2; i++) {
+                android.content.pm.ResolveInfo ri = hits.get(i);
+                if (ri.activityInfo == null) {
+                    continue;
+                }
+                sb.append(i == 0 ? "首位:" : "次位:");
+                sb.append(ri.activityInfo.packageName.equals(getPackageName())
+                        ? "本包" : ri.activityInfo.packageName);
+                sb.append("(p").append(ri.priority).append(") ");
+            }
+            return sb.toString().trim();
+        } catch (Throwable t) {
+            return "查询异常 " + t.getClass().getSimpleName();
+        }
+    }
+
+    /** 关于页下方的诊断文本（临时）。 */
+    private String buildDiagText() {
+        String[] lines = {
+                "【关机接管诊断·临时】",
+                "开关=" + (powerOffAutoOn ? "开" : "关") + " 阀门=" + gateStateText(),
+                "装设=" + dbgGet(this, DBG_GATE),
+                "查询 " + dbgGet(this, DBG_QUERY),
+                "接管=" + dbgGet(this, DBG_HOLD),
+                "暂停=" + dbgGet(this, DBG_PAUSE),
+        };
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < lines.length; i++) {
+            if (i > 0) {
+                sb.append(NL);
+            }
+            sb.append(lines[i]);
+        }
+        return sb.toString();
+    }
+

@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-
-
-
-
-
-
-
+<!--
+  只留 app_name（清单里 android:label 用）。
+  ★ 其余条目（tab_home / tab_files / tab_transfers / not_connected / scan_devices /
+    qr_connect / settings）已按"零引用即删"清掉：界面文案**全部**写在 Kotlin 里，
+    工程里没有任何一处 R.string./@string/ 取过它们（qr_connect 更是随扫码功能一起作废的）。
+    留着就是七条永远不生效的字符串。
+-->
 <resources>
     <string name="app_name">SonyConnect</string>
 </resources>

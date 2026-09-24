@@ -12,19 +12,14 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.bi2qfa.sonyconnect"
-        minSdk = 31          
+        // ★ 发布包名（GitHub 组织命名）：与代码包 namespace 分离是 AGP 的标准做法，
+        //   全部源码的 package 声明无需跟着动。安装器身份以它为准。
+        applicationId = "io.github.bi2qfa.sonyconnect"
+        minSdk = 31          // Android 12（需求指定）
         targetSdk = 36
-        
-        
-        
-        
-        
-        
-        
-        
-        versionCode = 7
-        versionName = "2.0"
+        // 2.5 线按全新安装发布：两端统一 versionCode=1。
+        versionCode = 1
+        versionName = "2.5"
     }
 
     buildTypes {
@@ -52,6 +47,8 @@ dependencies {
     implementation(libs.compose.ui.graphics)
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
+    // EXIF 方向与拍摄参数读取（竖屏照片的方向还原、预览器"照片信息"弹窗）
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
     debugImplementation(libs.compose.ui.tooling)
     testImplementation(libs.junit)
 }

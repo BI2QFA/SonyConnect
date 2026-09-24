@@ -1,0 +1,996 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SonyConnect 相机端主布局（640×480 帧缓冲，全部 px，与相机真值 1:1）。
+
+  换装依据：`SonyUI复刻包`（ILCE-6300 固件解包）。几何/字号/配色取自
+  `01_文档_SONY_UI_REF/` 的真值表；主界面图标区取自「同步到智能手机」这个原厂 App
+  的 `main_layout_panel_default.xml`（同一块 640×480 屏，几何可以直接照搬）：
+    相机 140×140 @(80,100)  连线点阵 180×40 @(230,157)  手机 140×140 @(420,100)
+    下方信息行 高 46 @y248~251（左组居中于 x148，右组居中于 x490）
+    两颗按钮 264×56 @(49,336)/(327,336)
+  以上都是**屏坐标**；本布局的正文区从 y=66（顶栏下沿）开始，所以统一减去 66。
+
+  顶栏 640×66 + 底栏 640×52 是 ScalarA 系统应用族（s_16_dd_parts_scalar_prin_*）：
+  **黑底 + 内侧一条 #333333 细线**（顶栏是底边、底栏是顶边），内容区就被这两条线
+  上下夹住 —— 原厂没有外框，别自己加。
+
+  两条硬纪律（资源包错误记录 #10/#11）：
+    ① 字号一律 px，绝不用 sp；② 横向压缩用 android:textScaleX，绝不用 View.setScaleX。
+  所有界面叠在一个 FrameLayout 里，由 MainActivity 切可见性（单 Activity，相机无返回键）。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#ff000000">
+
+    <!-- ===================== 主界面 =====================
+         顶栏 66 + 正文 362 + 底栏 52 = 480，整幅 640 宽。
+         顶栏用水平 LinearLayout + gravity=center_vertical：应用图标与标题**结构上**
+         共用一条横轴（原厂是 70×55 @顶栏(6,5) 对 46 高 @(78,10)，两者的中心都在 y≈33），
+         靠布局保证对齐，不靠各自算 margin 凑。 -->
+    <LinearLayout android:id="@+id/screen_main"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <include android:id="@+id/header_main" layout="@layout/screen_header" />
+
+        <!-- 正文 362px：三块互斥内容 + 常驻的一排按钮。
+             height=0 + weight=1 而不是写死 362：底栏贴底由布局保证（见菜单屏的注释）。 -->
+        <FrameLayout android:id="@+id/main_body"
+            android:layout_width="match_parent"
+            android:layout_height="0px"
+            android:layout_weight="1">
+
+            <!-- ① 连接示意（默认）：完全照搬原厂主屏的坐标（屏坐标减 66） -->
+            <RelativeLayout android:id="@+id/main_block_diagram"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent">
+
+                <!-- 相机 140×140 @屏(80,100)。原厂素材**不做预挤压** —— 它本来就是按
+                     这块 4:3 帧缓冲画的，压了反而错。
+                     ★ 初值给 **off** 那张：无线电就绪之前这台相机不该是亮的
+                     （判据与顶栏 wi-fi 指示同一条，见 refreshCameraIcon）。 -->
+                <ImageView android:id="@+id/main_icon_left"
+                    android:layout_width="140px"
+                    android:layout_height="140px"
+                    android:layout_marginLeft="80px"
+                    android:layout_marginTop="34px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:scaleType="fitXY"
+                    android:src="@drawable/ic_sync_camera_off" />
+
+                <!-- 连线点阵 180×40 @屏(230,157)：未连接=6 个暗点，已连接=亮点+箭头 -->
+                <ImageView android:id="@+id/main_icon_dots"
+                    android:layout_width="180px"
+                    android:layout_height="40px"
+                    android:layout_marginLeft="230px"
+                    android:layout_marginTop="91px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:scaleType="fitXY"
+                    android:src="@drawable/ic_sync_link_off" />
+
+                <!-- 手机 140×140 @屏(420,100)：同样用原厂的 on/off 两张图，未连接时是暗的 -->
+                <ImageView android:id="@+id/main_icon_phone"
+                    android:layout_width="140px"
+                    android:layout_height="140px"
+                    android:layout_marginLeft="420px"
+                    android:layout_marginTop="34px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:scaleType="fitXY"
+                    android:src="@drawable/ic_sync_phone_off" />
+
+                <!-- 信息行（原厂 y248~251，高 46）：
+                     左组居中于 x148（原厂 图片图标64 + 数字70 合起来的中心），
+                     右组居中于 x490（手机图标中心 420+70）。 -->
+                <TextView android:id="@+id/main_cap_left"
+                    android:layout_width="240px"
+                    android:layout_height="46px"
+                    android:layout_marginLeft="28px"
+                    android:layout_marginTop="185px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:gravity="center"
+                    style="@style/PfT42" />
+
+                <TextView android:id="@+id/main_cap_right"
+                    android:layout_width="240px"
+                    android:layout_height="46px"
+                    android:layout_marginLeft="370px"
+                    android:layout_marginTop="185px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:gravity="center"
+                    style="@style/PfT42" />
+            </RelativeLayout>
+
+            <!-- ② 热点信息（"热点信息"键，仅热点模式）：**左=热点名称与密码，右=二维码**。
+                 一屏给两样东西，各占一半：左边两行字（值 32px 单行，"DIRECT-xy:ILCE-6300"
+                 这种长度的 SSID 一行放得下），右边那块正方形二维码就是扫它连热点用。
+                 名称/密码两行与二维码块**竖向对齐**（行 76/136 对着码的 24..237，两组
+                 的中心都在 130 上下），读起来是一整块。 -->
+            <RelativeLayout android:id="@+id/main_block_hotspot"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:visibility="gone">
+
+                <TextView android:id="@+id/main_hot_name"
+                    android:layout_width="400px"
+                    android:layout_height="44px"
+                    android:layout_marginLeft="24px"
+                    android:layout_marginTop="76px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:text="热点名称：—"
+                    style="@style/PfT32" />
+
+                <TextView android:id="@+id/main_hot_pass"
+                    android:layout_width="400px"
+                    android:layout_height="44px"
+                    android:layout_marginLeft="24px"
+                    android:layout_marginTop="136px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:text="热点密码：—"
+                    style="@style/PfT32" />
+
+                <!-- 二维码预挤压：4:3 帧缓冲被拉伸为 16:9 时，3:4 的图恰好呈正方形。
+                     160×213 显示出来是 320×319 —— 相机这块 3 寸屏够扫了，不必占满；
+                     按钮行从 278 上移到 270 之后，码和说明行都要跟着让出空间。 -->
+                <ImageView android:id="@+id/qr_view"
+                    android:layout_width="160px"
+                    android:layout_height="213px"
+                    android:layout_marginLeft="452px"
+                    android:layout_marginTop="24px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:background="#ffffffff"
+                    android:scaleType="fitCenter" />
+
+                <TextView android:id="@+id/qr_caption"
+                    android:layout_width="160px"
+                    android:layout_height="wrap_content"
+                    android:layout_marginLeft="452px"
+                    android:layout_marginTop="240px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:gravity="center"
+                    android:text="扫码加入热点"
+                    style="@style/PfT26D" />
+            </RelativeLayout>
+
+            <!-- ③ 服务状态（"服务状态"键）：正文由 buildMainStatusText() 填。
+                 高度 260px：运行态最多 6 行，32px 字 6 行约 225px + 上内边距 20 正好放得下；
+                 再高就会钻到下面按钮（270）底下。
+                 字号 38px（用户："字加大一点，看起来更和谐"）。用 FsH38 这个**不带行距**的
+                 38px 档：运行态 5 行 × 44.5 ≈ 222 + 上内边距 20 = 242 < 270（按钮行），
+                 带行距的 PfH38 会多出 32px 行距、正好顶到按钮上。 -->
+            <TextView android:id="@+id/status_view"
+                android:layout_width="match_parent"
+                android:layout_height="260px"
+                android:paddingLeft="28px"
+                android:paddingTop="20px"
+                style="@style/FsH38" />
+
+            <!-- 常驻按钮行：264×56 @x49 / x327（原厂真值），整体居中即左右各留 49 -->
+            <LinearLayout android:id="@+id/main_buttons"
+                android:layout_width="wrap_content"
+                android:layout_height="56px"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="270px"
+                android:orientation="horizontal">
+
+                <TextView android:id="@+id/btn_main_left"
+                    android:layout_width="264px"
+                    android:layout_height="56px"
+                    android:background="@drawable/btn_dialog"
+                    android:gravity="center"
+                    android:text="热点信息"
+                    style="@style/PfT42" />
+
+                <TextView android:id="@+id/btn_main_right"
+                    android:layout_width="264px"
+                    android:layout_height="56px"
+                    android:layout_marginLeft="14px"
+                    android:background="@drawable/btn_dialog"
+                    android:gravity="center"
+                    android:text="服务状态"
+                    style="@style/PfT42" />
+            </LinearLayout>
+
+            <!-- 下方那束辉光：照原厂 `p_16_dd_parts_sync_background.png` 的槽位 ——
+                 640×298 @屏(0,130)，也就是**贴着正文底部往上铺满**（正文 66..428，
+                 所以贴底放就是 130..428，与 130 那条线重合）。
+                 · 它是原厂那一层"屏幕下方渐亮"的观感，用户要求"抄过来，只在主屏幕显示"；
+                 · 素材是自绘的 `ic_sync_glow.png`（`tools/ui/mk_ui_assets.py`）：
+                   形状照抄原图逐行有效 alpha，但把原图的 5 级 + 网点抖动换成了
+                   平滑单调的 8 位渐变（用户："原版的辉光渐变断层很严重，修复一下"）。
+                 · 放在 main_body 的**最后一个**子节点 = 画在最上层，与 XML 里原厂
+                   `image_background` 排最后一致（它只是一层很淡的洗色，不挡内容，
+                   也不可点、不可聚焦）。 -->
+            <ImageView android:id="@+id/main_glow"
+                android:layout_width="640px"
+                android:layout_height="298px"
+                android:layout_gravity="bottom|left"
+                android:scaleType="fitXY"
+                android:src="@drawable/ic_sync_glow" />
+        </FrameLayout>
+
+        <!-- 底栏 640×52：素材自带顶边 #333333 细线；按键引导右对齐（图标字体） -->
+        <LinearLayout android:id="@+id/main_footer"
+            android:layout_width="match_parent"
+            android:layout_height="52px"
+            android:background="@drawable/bg_footer52"
+            android:gravity="center_vertical|right"
+            android:orientation="horizontal"
+            android:paddingRight="10px">
+
+            <TextView android:id="@+id/footer_key_main"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="&#xE800;"
+                style="@style/PfTIcon" />
+
+            <TextView android:id="@+id/footer_text_main"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="6px"
+                android:text="选项"
+                style="@style/PfT36" />
+
+            <TextView android:id="@+id/footer_key_main_exit"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="18px"
+                android:text="&#xE80A;"
+                style="@style/PfTIcon" />
+
+            <TextView android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="6px"
+                android:text="退出"
+                style="@style/PfT36" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ===================== 选项菜单（页码菜单 PageMenu）=====================
+         原厂 PageMenu 在列表上方还有一条"页码指示"（36×44 的 1/2/3 数字图标），
+         那是给多页菜单用的 —— 本 App 只有一页 5 项，所以**整条删掉**（用户要求），
+         列表改为 302 高、上下各留 30px 居中。
+         列表 606 宽 @x17；行 606×49；分隔线 2px #222222；选中=橙实心条。 -->
+    <LinearLayout android:id="@+id/screen_menu"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <include android:id="@+id/header_menu" layout="@layout/screen_header" />
+
+        <!-- 正文吃掉顶栏与底栏之间的全部高度（height=0 + weight=1）。
+             ★ 底栏必须靠 weight 锚在整屏底部，**不能靠"66+362+52=480"这种算式** ——
+               上一版删页码指示行时把中间那层 362px 容器一起拆了，算式少了一项，
+               底栏就被顶上去、屏幕底下多出一条 30px 黑边（用户真机照片）。
+               weight 让"底栏贴底"由布局保证，以后加减内容都不会再漏。 -->
+        <FrameLayout android:layout_width="match_parent"
+            android:layout_height="0px"
+            android:layout_weight="1">
+
+            <ListView android:id="@+id/menu_list"
+                android:layout_width="606px"
+                android:layout_height="302px"
+                android:layout_marginLeft="17px"
+                android:layout_marginTop="30px"
+                android:divider="@drawable/h_divider"
+                android:dividerHeight="2px"
+                android:listSelector="@android:color/transparent"
+                android:cacheColorHint="#00000000"
+                android:fadingEdge="none"
+                android:scrollbars="none" />
+        </FrameLayout>
+
+        <!-- 底栏：菜单族**只画图标不画文字**，而且第一个是 **MENU 键帽**、第二个是返回箭头。
+             原厂菜单屏照片放大 6 倍看就是这个组合（左=MENU 键帽，右=回勾箭头）。
+             我之前放的是"确定圆点 \uE801 + 返回箭头"，那个圆点不对 —— 用户指出来的。 -->
+        <LinearLayout android:layout_width="match_parent"
+            android:layout_height="52px"
+            android:background="@drawable/bg_footer52"
+            android:gravity="center_vertical|right"
+            android:orientation="horizontal"
+            android:paddingRight="10px">
+            <TextView android:id="@+id/footer_key_menu"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="&#xE80A;"
+                style="@style/PfTIcon" />
+            <TextView android:id="@+id/footer_key_menu_back"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="2px"
+                android:text="&#xE803;"
+                style="@style/PfTIcon" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ===================== 已配对设备 =====================
+         样式与选项菜单完全一致（同一套 PageMenu 几何），只是内容换成设备清单。
+         设备可能很多 → ListView 自带滚动（主菜单 5 项用不到，这里必须靠它）。
+         ENTER 弹出解除确认。 -->
+    <LinearLayout android:id="@+id/screen_paired"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <include android:id="@+id/header_paired" layout="@layout/screen_header" />
+
+        <FrameLayout android:layout_width="match_parent"
+            android:layout_height="0px"
+            android:layout_weight="1">
+
+            <ListView android:id="@+id/paired_list"
+                android:layout_width="606px"
+                android:layout_height="302px"
+                android:layout_marginLeft="17px"
+                android:layout_marginTop="30px"
+                android:divider="@drawable/h_divider"
+                android:dividerHeight="2px"
+                android:listSelector="@android:color/transparent"
+                android:cacheColorHint="#00000000"
+                android:fadingEdge="none"
+                android:scrollbars="none" />
+        </FrameLayout>
+
+        <LinearLayout android:layout_width="match_parent"
+            android:layout_height="52px"
+            android:background="@drawable/bg_footer52"
+            android:gravity="center_vertical|right"
+            android:orientation="horizontal"
+            android:paddingRight="10px">
+            <TextView android:id="@+id/footer_key_paired"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="&#xE801;"
+                style="@style/PfTIcon" />
+            <TextView android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="6px"
+                android:text="解除配对"
+                style="@style/PfT36" />
+            <TextView android:id="@+id/footer_key_paired_menu"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="18px"
+                android:text="&#xE80A;"
+                style="@style/PfTIcon" />
+            <TextView android:id="@+id/footer_key_paired_back"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="2px"
+                android:text="&#xE803;"
+                style="@style/PfTIcon" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ===================== 连接设置（设置菜单 SetMenu 弹窗）=====================
+         照抄原厂 menu_set.xml 的结构（这是踩坑换来的）：
+           · 遮罩 #88000000 是**根布局自己的 background**
+           · 面板 518×480 @x62 是一个**只当装饰的空 View**（原厂是 ImageView id=menu_background）
+           · 标题（46 高 @13,29）、列表（489×302 @20,95 paddingRight 11）、按键引导
+             （500×40 @70,413）都是它的**兄弟节点**，用对齐属性贴到面板上
+         为什么非得这样：把 9-patch 当容器的 background，宿主 View 会继承它的隐式内边距 ——
+         AAPT2 对没有 padding marker 的 9-patch 会拿"固定边框"当内容区，于是给面板算出
+         (6,85,6,30) 的内边距，标题与列表整块被推下去 85px（真机照片量出来的就是这个数）。
+         装饰件与内容各自独立，就永远没有这个问题。
+         行 473×49 带前导单选圆点（原厂 s_16_dd_parts_radiobutton_off/on_c2 21×28）。 -->
+    <FrameLayout android:id="@+id/screen_mode"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <View android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/scrim_panel" />
+
+        <RelativeLayout android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <!-- 装饰件：面板底板（重建过的合规 9-patch） -->
+            <View android:id="@+id/mode_panel"
+                android:layout_width="518px"
+                android:layout_height="480px"
+                android:layout_marginLeft="62px"
+                android:background="@drawable/set_panel" />
+
+            <!-- 标题：46 高 @面板(13,29)，垂直居中左对齐（原厂 RESID_FONTSIZE_BIG_L_EDGE_OFF） -->
+            <TextView android:layout_width="wrap_content"
+                android:layout_height="46px"
+                android:layout_marginLeft="13px"
+                android:layout_marginTop="29px"
+                android:layout_alignLeft="@id/mode_panel"
+                android:layout_alignTop="@id/mode_panel"
+                android:gravity="center_vertical|left"
+                android:text="连接设置"
+                style="@style/PfT42" />
+
+            <!-- 列表：489×302 @面板(20,95)，paddingRight 11，分隔线 2px -->
+            <ListView android:id="@+id/mode_list"
+                android:layout_width="489px"
+                android:layout_height="302px"
+                android:layout_marginLeft="20px"
+                android:layout_marginTop="95px"
+                android:layout_alignLeft="@id/mode_panel"
+                android:layout_alignTop="@id/mode_panel"
+                android:paddingRight="11px"
+                android:divider="@drawable/h_divider"
+                android:dividerHeight="2px"
+                android:listSelector="@android:color/transparent"
+                android:cacheColorHint="#00000000"
+                android:fadingEdge="none"
+                android:scrollbars="none" />
+
+            <!-- 按键引导：原厂 FooterGuide 500×40 @(70,413)，右对齐。
+                 ★ MENU 后面那块**随"有没有上一级"变**（用户定版的 MENU 铁律：返回上一层级，
+                 没有可返回的就退出软件）：从选项菜单进来是"返回箭头"，首启直接弹出来
+                 （连接设置就是第一层）时是"退出"两个字 —— 提示不能是假话。
+                 图标字体的私有区字形里没有汉字，所以这两态是**两个控件**，切可见性。 -->
+            <LinearLayout android:layout_width="500px"
+                android:layout_height="40px"
+                android:layout_marginLeft="70px"
+                android:layout_marginTop="413px"
+                android:gravity="center_vertical|right"
+                android:orientation="horizontal">
+                <TextView android:id="@+id/footer_key_mode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="&#xE80A;"
+                    style="@style/PfTIcon" />
+                <TextView android:id="@+id/footer_mode_back"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginLeft="2px"
+                    android:text="&#xE803;"
+                    style="@style/PfTIcon" />
+                <TextView android:id="@+id/footer_mode_exit"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginLeft="6px"
+                    android:text="退出"
+                    android:visibility="gone"
+                    style="@style/PfT36" />
+            </LinearLayout>
+        </RelativeLayout>
+    </FrameLayout>
+
+    <!-- ===================== 配对模式 =====================
+         界面结构照主界面：上下两条 #333333 细线（顶栏/底栏素材自带）、左上应用图标+
+         软件标题、右上电量、底部按键引导**都不变**，中间换成配对码 + 倒计时。
+         进入本页即开启配对窗口（6 位码 + 180s），离开或超时即关窗 ——
+         与无线电状态机同一条纪律：离开模式必须收尾。
+
+         设备清单**不在这一页**：配对与"已配对设备"拆成两个界面（用户要求）。
+         配对码是 PFontSize.H52W48（全 UI 唯一 scaleX 0.8846 的例外）。
+         中间那块用 layout_gravity=center 整体居中，码/倒计时/提示三行各自居中。
+
+         ★ 正文是**三块互斥内容 + 一排常驻按钮**，与主界面同一套结构（用户要求：
+           "配对界面下也应该显示类似于主页面的按钮"）：
+             0 配对码（默认）  6 位码 + 倒计时 + 提示，在按钮行以上居中
+             1 热点信息        左=热点名称与密码，右=二维码（与主界面同一份内容）
+             2 服务状态        buildMainStatusText()，状态行带"（配对模式）"
+           左键 = 热点信息 / Wi-Fi 设置 / 连接方式（随连接方式变，与主界面一致），
+           右键 = 服务状态。两块内容与主界面**同一份数据、同一套几何**（屏坐标一致），
+           只是各在自己的屏里 —— 布局不能跨屏复用（同 id 两份会撞车），由代码统一填。 -->
+    <LinearLayout android:id="@+id/screen_pairing"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <include android:id="@+id/header_pairing" layout="@layout/screen_header" />
+
+        <FrameLayout android:layout_width="match_parent"
+            android:layout_height="0px"
+            android:layout_weight="1">
+
+            <!-- ① 配对码（默认块）：整块在按钮行（270）以上居中 ——
+                 三行合起来约 176px，居中在 0..270 里上下各留 47，不会顶到按钮。 -->
+            <LinearLayout android:id="@+id/pairing_block_code"
+                android:layout_width="match_parent"
+                android:layout_height="270px"
+                android:layout_gravity="top|center_horizontal"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <TextView android:id="@+id/pairing_code"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="- - - - - -"
+                    style="@style/PfH52" />
+
+                <!-- 倒计时：28px 灰（font_invalid 是原厂的"次要信息"色 #777777） -->
+                <TextView android:id="@+id/pairing_countdown"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="26px"
+                    android:text=""
+                    style="@style/PfT44" />
+
+                <TextView android:id="@+id/pairing_hint"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16px"
+                    android:text="在手机端输入配对码"
+                    style="@style/PfT34D" />
+            </LinearLayout>
+
+            <!-- ② 热点信息：几何与主界面那块**逐像素相同**（同一块 640×480 屏） -->
+            <RelativeLayout android:id="@+id/pairing_block_hotspot"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:visibility="gone">
+
+                <TextView android:id="@+id/pairing_hot_name"
+                    android:layout_width="400px"
+                    android:layout_height="44px"
+                    android:layout_marginLeft="24px"
+                    android:layout_marginTop="76px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:text="热点名称：—"
+                    style="@style/PfT32" />
+
+                <TextView android:id="@+id/pairing_hot_pass"
+                    android:layout_width="400px"
+                    android:layout_height="44px"
+                    android:layout_marginLeft="24px"
+                    android:layout_marginTop="136px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:text="热点密码：—"
+                    style="@style/PfT32" />
+
+                <ImageView android:id="@+id/pairing_qr_view"
+                    android:layout_width="160px"
+                    android:layout_height="213px"
+                    android:layout_marginLeft="452px"
+                    android:layout_marginTop="24px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:background="#ffffffff"
+                    android:scaleType="fitCenter" />
+
+                <TextView android:id="@+id/pairing_qr_caption"
+                    android:layout_width="160px"
+                    android:layout_height="wrap_content"
+                    android:layout_marginLeft="452px"
+                    android:layout_marginTop="240px"
+                    android:layout_alignParentLeft="true"
+                    android:layout_alignParentTop="true"
+                    android:gravity="center"
+                    android:text="扫码加入热点"
+                    style="@style/PfT26D" />
+            </RelativeLayout>
+
+            <!-- ③ 服务状态：与主界面同一份正文（buildMainStatusText()），
+                 区别只有状态行末尾那个"（配对模式）"。 -->
+            <TextView android:id="@+id/pairing_status"
+                android:layout_width="match_parent"
+                android:layout_height="260px"
+                android:paddingLeft="28px"
+                android:paddingTop="20px"
+                android:visibility="gone"
+                style="@style/FsH38" />
+
+            <!-- 常驻按钮行：与主界面同款同坐标（264×56 @x49 / x327，行 y270） -->
+            <LinearLayout android:id="@+id/pairing_buttons"
+                android:layout_width="wrap_content"
+                android:layout_height="56px"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="270px"
+                android:orientation="horizontal">
+
+                <TextView android:id="@+id/btn_pairing_left"
+                    android:layout_width="264px"
+                    android:layout_height="56px"
+                    android:background="@drawable/btn_dialog"
+                    android:gravity="center"
+                    android:text="热点信息"
+                    style="@style/PfT42" />
+
+                <TextView android:id="@+id/btn_pairing_right"
+                    android:layout_width="264px"
+                    android:layout_height="56px"
+                    android:layout_marginLeft="14px"
+                    android:background="@drawable/btn_dialog"
+                    android:gravity="center"
+                    android:text="服务状态"
+                    style="@style/PfT42" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <LinearLayout android:layout_width="match_parent"
+            android:layout_height="52px"
+            android:background="@drawable/bg_footer52"
+            android:gravity="center_vertical|right"
+            android:orientation="horizontal"
+            android:paddingRight="10px">
+            <!-- 按键引导（用户要求加上）：垃圾桶键 = 打开选项菜单（与主界面同款），
+                 MENU 键帽 + 后面那块 = MENU 的实际作用。
+                 ★ 配对页的 MENU **两种语义**（用户定版，判据是"谁把用户带进来的"）：
+                   · 应用自动进的（本机没有已配对设备 → 配对页就是这一态的家）
+                     → MENU = 退出软件，后面那块是"退出"两个字；
+                   · 用户自己在菜单里点"进入配对模式"进来的（本机有设备）
+                     → MENU = 返回刚才那一屏（选项菜单），后面那块是返回箭头。
+                 图标字体的私有区没有汉字，所以这两态是**两个控件**、切可见性
+                 （由 MainActivity.refreshMenuHint 按 menuExitsHere() 统一切）。 -->
+            <TextView android:id="@+id/footer_key_pairing_menu"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="&#xE800;"
+                style="@style/PfTIcon" />
+            <TextView android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="6px"
+                android:text="选项"
+                style="@style/PfT36" />
+            <TextView android:id="@+id/footer_key_pairing"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="18px"
+                android:text="&#xE80A;"
+                style="@style/PfTIcon" />
+            <TextView android:id="@+id/footer_pairing_back"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="2px"
+                android:text="&#xE803;"
+                style="@style/PfTIcon" />
+            <TextView android:id="@+id/footer_pairing_exit"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="6px"
+                android:text="退出"
+                android:visibility="gone"
+                style="@style/PfT36" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ===================== 关于 ===================== -->
+    <LinearLayout android:id="@+id/screen_about"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <include android:id="@+id/header_about" layout="@layout/screen_header" />
+
+        <!-- 关于：照原厂那种"整块居中"的正文（用户给的参考图就是这个版式）。
+             ★ 用户要求拆成**三块**（分法与手机端关于页一致）：
+               ① 应用名与版本  ② 配套版本提示 + 开发者  ③ 本机设备码。
+             三块之间靠 marginTop 拉开距离 —— 在同一个居中列里，块间空档就是分组，
+             不再是一段用换行硬拼起来的长文本。
+             这里的 android:text 只是**兜底默认值**：真机进屏时会被整段替换掉
+             （见 MainActivity.updateAboutText()），留样例是为了让布局预览完整。 -->
+        <FrameLayout android:layout_width="match_parent"
+            android:layout_height="0px"
+            android:layout_weight="1">
+
+            <LinearLayout android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:orientation="vertical"
+                android:gravity="center_horizontal">
+
+                <!-- ① 应用名 + 版本：三块里最大的一号 -->
+                <TextView android:id="@+id/about_title"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:text="SonyConnect 2.0"
+                    style="@style/PfH42" />
+
+                <!-- ② 配套版本提示 + 开发者（用户定的：这两行算一块） -->
+                <TextView android:id="@+id/about_meta"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="26px"
+                    android:gravity="center"
+                    android:text="配套手机端 SonyConnect 2.0 使用&#10;开发者：BI2QFA"
+                    style="@style/PfH38" />
+
+                <!-- ③ 本机设备码 -->
+                <TextView android:id="@+id/about_code"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="26px"
+                    android:gravity="center"
+                    android:text="本机设备码：00000000"
+                    style="@style/PfH38" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <LinearLayout android:layout_width="match_parent"
+            android:layout_height="52px"
+            android:background="@drawable/bg_footer52"
+            android:gravity="center_vertical|right"
+            android:orientation="horizontal"
+            android:paddingRight="10px">
+            <TextView android:id="@+id/footer_key_about"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="&#xE80A;"
+                style="@style/PfTIcon" />
+            <TextView android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="2px"
+                android:text="&#xE803;"
+                style="@style/PfTIcon" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ===================== 通用确认弹窗 =====================
+         用的是原厂 `cmn_layout_dialog_string_with_icon_two_button_with_fotter`（**带感叹号图标**那款）：
+         面板 p_dialogarea 600×416 @(20,4)；警告图标 p_dialogwarning 60×60 @(290,20)；
+         正文 544×180 @(48,80) 38px 居中；按钮 240×56 @(200,274)/(200,340)；
+         自带底栏 FooterGuide 640×60 @y420（p_footer + 引导文字 624×40 @+(8,12)）。
+         单按钮通知态：把"取消"藏掉并把"确定"移到 (200,340)（原厂单按钮恒为 focus 橙，
+         见 MainActivity.showNotice —— 两个按钮都是绝对定位，藏一个不会挪动另一个）。 -->
+    <!-- 调试日志屏（隐藏入口：关于页**连按十下确定键**）。
+         正文是可滚动的 ScrollView + 单个 TextView（26px 多行样式 FsH26）；
+         进屏时自动滚到最底（最新一条），确定键手动刷新，MENU 回关于页。
+         底栏按键引导与其余各屏一致（MENU 键帽 + 返回箭头）。
+         日志只活在内存里（AppLog），本屏不做任何文件读写。 -->
+    <LinearLayout android:id="@+id/screen_log"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <include android:id="@+id/header_log" layout="@layout/screen_header" />
+
+        <ScrollView android:id="@+id/log_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="0px"
+            android:layout_weight="1"
+            android:paddingLeft="8px"
+            android:paddingRight="8px"
+            android:paddingTop="4px">
+
+            <TextView android:id="@+id/log_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                style="@style/FsH26" />
+        </ScrollView>
+
+        <LinearLayout android:layout_width="match_parent"
+            android:layout_height="52px"
+            android:background="@drawable/bg_footer52"
+            android:gravity="center_vertical|right"
+            android:orientation="horizontal"
+            android:paddingRight="10px">
+            <!-- 按键引导与其余各屏同款（用户要求"日志界面也应有提示"）：
+                 &#xE80A; 是 MENU 键帽、&#xE803; 是返回箭头，合起来 = "MENU 返回上一级"。 -->
+            <TextView android:id="@+id/footer_key_log"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="&#xE80A;"
+                style="@style/PfTIcon" />
+            <TextView android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="2px"
+                android:text="&#xE803;"
+                style="@style/PfTIcon" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <FrameLayout android:id="@+id/dlg_exit"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/scrim_40"
+        android:visibility="gone">
+
+        <!-- 面板 600×**424** @(20,4)：底栏改成与其余各屏同款同高（52px 贴底）之后，
+             面板要长到 y428 才与它严丝合缝（原来 416 是按"底栏 60px @y420"那份原厂对话框
+             尺寸配的）。素材是平图，纵向拉 8px（2%）看不出来；文字/按钮的 y 坐标都相对
+             面板顶部，一个都不动。 -->
+        <RelativeLayout android:layout_width="600px"
+            android:layout_height="424px"
+            android:layout_marginLeft="20px"
+            android:layout_marginTop="4px"
+            android:layout_gravity="top|left"
+            android:background="@drawable/dlg_area">
+
+            <!-- 警告图标 60×60 @(290,20)：双按钮确认恒显示（原厂就是"带图标"那款）；
+                 非警告性的单按钮通知由 MainActivity 收起来 -->
+            <ImageView android:id="@+id/dlg_exit_warn"
+                android:layout_width="60px"
+                android:layout_height="60px"
+                android:layout_marginLeft="270px"
+                android:layout_marginTop="16px"
+                android:layout_alignParentLeft="true"
+                android:layout_alignParentTop="true"
+                android:scaleType="fitXY"
+                android:src="@drawable/dlg_warn" />
+
+            <TextView android:id="@+id/exit_msg"
+                android:layout_width="544px"
+                android:layout_height="180px"
+                android:layout_marginLeft="28px"
+                android:layout_marginTop="76px"
+                android:layout_alignParentLeft="true"
+                android:layout_alignParentTop="true"
+                android:gravity="center"
+                android:text="确定要退出 SonyConnect 吗？"
+                style="@style/PfH38" />
+
+            <TextView android:id="@+id/btn_exit_ok"
+                android:layout_width="240px"
+                android:layout_height="56px"
+                android:layout_marginLeft="180px"
+                android:layout_marginTop="270px"
+                android:layout_alignParentLeft="true"
+                android:layout_alignParentTop="true"
+                android:background="@drawable/btn_dialog"
+                android:gravity="center"
+                android:text="确定"
+                style="@style/PfT42" />
+
+            <TextView android:id="@+id/btn_exit_cancel"
+                android:layout_width="240px"
+                android:layout_height="56px"
+                android:layout_marginLeft="180px"
+                android:layout_marginTop="336px"
+                android:layout_alignParentLeft="true"
+                android:layout_alignParentTop="true"
+                android:background="@drawable/btn_dialog"
+                android:gravity="center"
+                android:text="取消"
+                style="@style/PfT42" />
+        </RelativeLayout>
+
+        <!-- 弹窗的按键引导条：**与其余各屏同款同高**（bg_footer52，640×52 贴底）。
+             ★ 原来抄的是原厂对话框那份 p_footer（640×60 @y420）—— 比正常状态的底栏
+             高 8px 也上移 8px，用户一眼就看出"弹窗的提示栏被加高了"，要求统一。
+             浮层的 MENU 只会"关掉浮层、回到它压着的那一屏"，所以后面恒是返回箭头。 -->
+        <LinearLayout android:layout_width="640px"
+            android:layout_height="52px"
+            android:layout_gravity="bottom|left"
+            android:background="@drawable/bg_footer52"
+            android:gravity="center_vertical|right"
+            android:orientation="horizontal"
+            android:paddingRight="10px">
+            <TextView android:id="@+id/footer_key_dlg_exit"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="&#xE80A;"
+                style="@style/PfTIcon" />
+            <TextView android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="2px"
+                android:text="&#xE803;"
+                style="@style/PfTIcon" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- ===================== 设为默认确认弹窗 ===================== -->
+    <FrameLayout android:id="@+id/dlg_default"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/scrim_40"
+        android:visibility="gone">
+
+        <!-- 面板 600×**424** @(20,4)：底栏改成与其余各屏同款同高（52px 贴底）之后，
+             面板要长到 y428 才与它严丝合缝（原来 416 是按"底栏 60px @y420"那份原厂对话框
+             尺寸配的）。素材是平图，纵向拉 8px（2%）看不出来；文字/按钮的 y 坐标都相对
+             面板顶部，一个都不动。 -->
+        <RelativeLayout android:layout_width="600px"
+            android:layout_height="424px"
+            android:layout_marginLeft="20px"
+            android:layout_marginTop="4px"
+            android:layout_gravity="top|left"
+            android:background="@drawable/dlg_area">
+
+            <TextView android:id="@+id/default_msg"
+                android:layout_width="544px"
+                android:layout_height="180px"
+                android:layout_marginLeft="28px"
+                android:layout_marginTop="76px"
+                android:layout_alignParentLeft="true"
+                android:layout_alignParentTop="true"
+                android:gravity="center"
+                android:text="将此连接方式设为默认？"
+                style="@style/PfH38" />
+
+            <TextView android:id="@+id/btn_default_ok"
+                android:layout_width="240px"
+                android:layout_height="56px"
+                android:layout_marginLeft="180px"
+                android:layout_marginTop="270px"
+                android:layout_alignParentLeft="true"
+                android:layout_alignParentTop="true"
+                android:background="@drawable/btn_dialog"
+                android:gravity="center"
+                android:text="设为默认"
+                style="@style/PfT42" />
+
+            <TextView android:id="@+id/btn_default_no"
+                android:layout_width="240px"
+                android:layout_height="56px"
+                android:layout_marginLeft="180px"
+                android:layout_marginTop="336px"
+                android:layout_alignParentLeft="true"
+                android:layout_alignParentTop="true"
+                android:background="@drawable/btn_dialog"
+                android:gravity="center"
+                android:text="仅本次"
+                style="@style/PfT42" />
+        </RelativeLayout>
+
+        <!-- 按键引导条与确认弹窗那条**逐项相同**（其余各屏同款：bg_footer52 640×52 贴底） -->
+        <LinearLayout android:layout_width="640px"
+            android:layout_height="52px"
+            android:layout_gravity="bottom|left"
+            android:background="@drawable/bg_footer52"
+            android:gravity="center_vertical|right"
+            android:orientation="horizontal"
+            android:paddingRight="10px">
+            <TextView android:id="@+id/footer_key_dlg_default"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="&#xE80A;"
+                style="@style/PfTIcon" />
+            <TextView android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="2px"
+                android:text="&#xE803;"
+                style="@style/PfTIcon" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- ===================== 正在退出 / 正在切换模式（全屏黑底 + 四边外框） =====================
+         用户要的就是**最开始那一版主界面**的那个"带四边边框的全屏"版式（`panel_frame`：
+         600×468 @(20,6) 的一圈 1px 细线），并且"下面没有提示栏" —— 所以：
+           · 整屏纯黑（#ff000000）打底，不再压在上一屏之上（原厂 poweroff/boot_layout_panel
+             就是纯黑整屏，`exit_screen.xml` 也是整屏 + 一条底栏，没有面板没有遮罩）；
+           · 四边外框用最开始那个 `@drawable/panel_frame`，**槽位按相机原生界面实测**：
+             用户给了张原生"格式化完成。"的全屏提示照片，量下来（照片里 LCD 横向
+             1.442 照片px/帧缓冲px、纵向 1.083，之比 1.333 = 帧缓冲 x2/y1.5 的拉伸比，
+             说明这张照片基本没有透视误差）：
+               · 左内缩 31.9、右内缩 33.3 → **左右各 32**（两侧独立量出来几乎相等）；
+               · 上内缩 9.2、下内缩 ≈69~75 → **上 9、下 71**。
+             也就是**竖向不居中**（框贴着上方，下面留一大条）—— 用户点的正是这一点：
+             "这个框并不是居中屏幕的"。所以这里是 (32,9) 起、576×400。
+             线的颜色照实测（框架亮度 ≈ #393939）取原厂结构线 #333333。
+           · **不要底栏那一条 60px 的带子**（用户明确说"下面没有提示栏"）。
+         正文一句提示按原厂那张的位置放（帧缓冲 (320,174)，不是屏幕正中）——
+         相机原生那屏上写的是"格式化完成。"，我们这里换成"正在退出···"。 -->
+    <FrameLayout android:id="@+id/dlg_exiting"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#ff000000"
+        android:visibility="gone">
+
+        <View android:id="@+id/exit_frame"
+            android:layout_width="576px"
+            android:layout_height="400px"
+            android:layout_marginLeft="32px"
+            android:layout_marginTop="9px"
+            android:background="@drawable/panel_frame" />
+
+        <!-- 正文位置按相机原生那张照片实测：字中心在帧缓冲 (320, 174) ——
+             比屏幕中心(240)高 66px（原厂那张"格式化完成。"的墨迹中心就是 174，
+             字高 37 与我们 PfH38 的 38 基本一致，横向同样是居中）。
+             做法照本工程一贯的"定高框 + gravity=center"：框 48 高、上边距 150 → 框心 174。 -->
+        <TextView android:id="@+id/exit_ing_msg"
+            android:layout_width="640px"
+            android:layout_height="48px"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="150px"
+            android:gravity="center"
+            android:text="正在退出···"
+            style="@style/PfH38" />
+    </FrameLayout>
+</FrameLayout>

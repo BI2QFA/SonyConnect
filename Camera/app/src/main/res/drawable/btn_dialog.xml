@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  原厂按钮两态：焦点/按下 = 橙（弹窗 p_bt_x_56_f / 主屏 cmn_button_68 的同一观感），
+  常态 = 深底描边。两者都是**重建过的合规 9-patch**（来自 SonyUIDemoLite，已实机验证）——
+  固件原图 marker 是 #DD7700、四角不透明，AAPT2 会直接拒收。
+
+  焦点态由 state_focused 驱动，所以代码里 requestFocus() 就够了，别再手动换背景
+  （旧实现手动 setBackgroundResource(row_bg_camera)，会和 9-patch 打架）。
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true" android:drawable="@drawable/btn_focus" />
+    <item android:state_selected="true" android:drawable="@drawable/btn_focus" />
+    <item android:state_pressed="true" android:drawable="@drawable/btn_focus" />
+    <item android:drawable="@drawable/btn_normal" />
+</selector>
