@@ -24,6 +24,16 @@ data class RecState(
     val recSeconds: Int = 0,
     val lastShot: String = "",
     val lvPort: Int = 0,
+    // 相机端取景/快门诊断（相机 REC_GET_STATE 下发，真机排障用）
+    val lvSrc: String = "off",
+    val seqFrames: Int = 0,
+    val cbFrames: Int = 0,
+    val jpgFrames: Int = 0,
+    val lvClients: Int = 0,
+    val lvSent: Int = 0,
+    val shootFired: String = "",
+    val shootErr: String = "",
+    val seqErr: String = "",
     val iso: String = "",
     val isoAvail: List<String> = emptyList(),
     val fnumber: String = "",
@@ -54,6 +64,8 @@ object RecController {
     var rec by mutableStateOf(RecState())
         private set
     var preview by mutableStateOf<Bitmap?>(null)
+        private set
+    var lvStatus by mutableStateOf("")
         private set
     var lastShotPath by mutableStateOf<String?>(null)
         private set
@@ -234,15 +246,18 @@ object RecController {
         if (port <= 0) return
         val client = LiveviewClient(h, port, ConnectionCenter.boundNetwork)
         liveview = client
-        client.start { jpeg ->
-            val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return@start
-            preview = bmp
-        }
+        client.start(
+            { jpeg ->
+                val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return@start
+                preview = bmp
+            },
+        ) { st -> lvStatus = st }
     }
 
     private fun stopLiveview() {
         liveview?.close()
         liveview = null
+        lvStatus = ""
         val h = host
         if (h != null) {
             runCatching { ObjectRepository.recLvStop(h) }
@@ -258,6 +273,15 @@ object RecController {
         recSeconds = o.optInt("recSeconds"),
         lastShot = o.optString("lastShot"),
         lvPort = o.optInt("lvPort"),
+        lvSrc = o.optString("lvSrc", "off"),
+        seqFrames = o.optInt("seqFrames"),
+        cbFrames = o.optInt("cbFrames"),
+        jpgFrames = o.optInt("jpgFrames"),
+        lvClients = o.optInt("lvClients"),
+        lvSent = o.optInt("lvSent"),
+        shootFired = o.optString("shootFired"),
+        shootErr = o.optString("shootErr"),
+        seqErr = o.optString("seqErr"),
         iso = o.optString("iso"),
         isoAvail = strList(o, "isoAvail"),
         fnumber = o.optString("fnumber"),

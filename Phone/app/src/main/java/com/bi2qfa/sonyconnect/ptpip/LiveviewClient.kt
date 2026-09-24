@@ -19,15 +19,20 @@ class LiveviewClient(
         fun onJpeg(jpeg: ByteArray)
     }
 
+    /** 连接状态回调：connected / failed:原因 / closed。真机排障用。 */
+    fun interface StateListener {
+        fun onState(state: String)
+    }
+
     private val running = AtomicBoolean(false)
     private var socket: Socket? = null
     private var thread: Thread? = null
 
-    fun start(listener: FrameListener) {
+    fun start(listener: FrameListener, stateListener: StateListener? = null) {
         if (!running.compareAndSet(false, true)) return
         val t = Thread({
             try {
-                readLoop(listener)
+                readLoop(listener, stateListener)
             } catch (_: IOException) {
             } finally {
                 running.set(false)
@@ -45,17 +50,28 @@ class LiveviewClient(
         thread = null
     }
 
-    private fun readLoop(listener: FrameListener) {
+    private fun readLoop(listener: FrameListener, stateListener: StateListener?) {
         val factory: SocketFactory = network?.socketFactory ?: SocketFactory.getDefault()
-        val s = factory.createSocket()
-        s.tcpNoDelay = true
-        s.soTimeout = 8000
-        s.connect(InetSocketAddress(host, port), 5000)
+        val s = try {
+            factory.createSocket().also {
+                it.tcpNoDelay = true
+                it.soTimeout = 8000
+                it.connect(InetSocketAddress(host, port), 5000)
+            }
+        } catch (t: Throwable) {
+            stateListener?.onState("failed:${t.message ?: t.javaClass.simpleName}")
+            return
+        }
         socket = s
+        stateListener?.onState("connected")
         val input = s.getInputStream()
-        while (running.get() && !s.isClosed) {
-            val jpeg = readFrame(input) ?: break
-            if (jpeg.isNotEmpty()) listener.onJpeg(jpeg)
+        try {
+            while (running.get() && !s.isClosed) {
+                val jpeg = readFrame(input) ?: break
+                if (jpeg.isNotEmpty()) listener.onJpeg(jpeg)
+            }
+        } finally {
+            stateListener?.onState("closed")
         }
     }
 

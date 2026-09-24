@@ -145,6 +145,25 @@ fun RemoteScreen(onClose: () -> Unit) {
             if (!err.isNullOrBlank()) {
                 Text(err, color = Color(0xFFFF8A80), style = MaterialTheme.typography.bodySmall)
             }
+            if (!rec.error.isNullOrBlank()) {
+                Text("相机：$rec.error", color = Color(0xFFFFCC80), style = MaterialTheme.typography.bodySmall)
+            }
+            if (rec.active) {
+                Text(
+                    buildString {
+                        append("源").append(rec.lvSrc)
+                        append(" 帧").append(rec.seqFrames + rec.jpgFrames).append('/').append(rec.lvSent)
+                        append(" 连").append(rec.lvClients)
+                        if (RecController.lvStatus.isNotBlank()) append(" · ").append(RecController.lvStatus)
+                        if (rec.shootFired.isNotBlank()) append(" · 快门").append(rec.shootFired)
+                        if (rec.shootErr.isNotBlank()) append(" · ").append(rec.shootErr)
+                        if (rec.seqErr.isNotBlank()) append(" · seqErr:").append(rec.seqErr)
+                    },
+                    color = Color.White.copy(alpha = 0.55f),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
 
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
