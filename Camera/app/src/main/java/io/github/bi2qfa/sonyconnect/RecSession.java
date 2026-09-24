@@ -4,6 +4,8 @@ import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.graphics.YuvImage;
 import android.hardware.Camera;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Pair;
 import android.view.SurfaceHolder;
 
@@ -67,12 +69,33 @@ public final class RecSession {
     private Camera camera;
     private Object mediaRecorder;
 
+    // ★ 官方智能遥控同款帧源：com.sony.scalar.hardware.CameraSequence 原生 JPEG 流
+    //   （智能遥控.apk 反编译确认的精确签名）：
+    //     CameraSequence.open(CameraEx) → Options.setOption(...) → startPreviewSequence(Options)
+    //     → getPreviewSequenceFrames(1) 返回 DeviceMemory[]，元素即 DeviceBuffer：
+    //       getSize()I、read(ByteBuffer,II)I、release()V（签名取自 dex method_id 表）
+    private Object cameraSeq;
+    private Thread seqThread;
+    private volatile boolean seqRunning;
+    private final java.nio.ByteBuffer seqBuf = java.nio.ByteBuffer.allocateDirect(160 * 1024);
+
     private LiveviewServer liveview;
     private final AtomicReference<byte[]> latestJpeg = new AtomicReference<byte[]>();
     private final AtomicBoolean encoding = new AtomicBoolean(false);
     private int previewW;
     private int previewH;
     private SurfaceHolder previewHolder;
+
+    // 取景诊断计数（REC_GET_STATE 可查，真机排障全靠它们）
+    private volatile int lvSrc; // 0=无 1=seq 2=cb
+    private final AtomicInteger seqFrames = new AtomicInteger();
+    private final AtomicInteger cbFrames = new AtomicInteger();
+    private final AtomicInteger jpgFrames = new AtomicInteger();
+    private volatile String lastSeqErr = "";
+    private volatile String lastShootFired = "";
+    private volatile String lastShootErr = "";
+    private final AtomicBoolean shotRejected = new AtomicBoolean(false);
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private final Object shotLock = new Object();
     private CountDownLatch shotLatch;
@@ -209,16 +232,177 @@ public final class RecSession {
             if (liveview != null && liveview.isRunning()) {
                 return liveview.port();
             }
+            // 帧源：官方 CameraSequence 原生 JPEG 优先（A7R2 上官方 App 就靠它出流），
+            // 打不开再退回 camera1 预览回调的 NV21→JPEG 编码路径
+            boolean seq = startSequenceLocked();
+            lvSrc = seq ? 1 : 2;
+            if (!seq) {
+                // 预览回调一个帧都没来过的话再补挂一次（部分 HAL 要求预览启动后才挂回调）
+                rearmPreviewCallbackLocked();
+            }
             try {
                 liveview = new LiveviewServer(latestJpeg);
                 liveview.start();
-                AppLog.i("Rec", "liveview 端口=" + liveview.port());
+                AppLog.i("Rec", "liveview 端口=" + liveview.port() + " 帧源=" + (seq ? "seq" : "cb"));
                 return liveview.port();
             } catch (Throwable t) {
                 lastError = shortErr(t);
                 liveview = null;
+                stopSequenceLocked();
+                lvSrc = 0;
                 return -1;
             }
+        }
+    }
+
+    /** 官方 LiveviewLoader.startSequence 同款：open → Options → startPreviewSequence。 */
+    private boolean startSequenceLocked() {
+        if (seqRunning) {
+            return true;
+        }
+        if (cameraEx == null) {
+            lastSeqErr = "cameraEx=null";
+            return false;
+        }
+        stopSequenceLocked();
+        try {
+            Class<?> seqCl = Class.forName("com.sony.scalar.hardware.CameraSequence");
+            Class<?> camExCl = Class.forName("com.sony.scalar.hardware.CameraEx");
+            Class<?> optCl = Class.forName("com.sony.scalar.hardware.CameraSequence$Options");
+            Object seq = seqCl.getMethod("open", camExCl).invoke(null, cameraEx);
+            if (seq == null) {
+                lastSeqErr = "open 返回 null";
+                AppLog.w("Rec", "CameraSequence.open null");
+                return false;
+            }
+            Object opts = optCl.newInstance();
+            Method setOpt = optCl.getMethod("setOption", String.class, int.class);
+            setOpt.invoke(opts, "PREVIEW_FRAME_RATE", Integer.valueOf(30000)); // 30.000fps
+            setOpt.invoke(opts, "PREVIEW_FRAME_WIDTH", Integer.valueOf(640));
+            setOpt.invoke(opts, "PREVIEW_FRAME_HEIGHT", Integer.valueOf(0)); // 0=随宽度自动
+            setOpt.invoke(opts, "PREVIEW_FRAME_FORMAT", Integer.valueOf(256)); // JPEG
+            setOpt.invoke(opts, "PREVIEW_FRAME_MAX_NUM", Integer.valueOf(1));
+            setOpt.invoke(opts, "JPEG_COMPRESS_RATE_DENOM", Integer.valueOf(15));
+            setOpt.invoke(opts, "JPEG_COMPRESS_MAX_SIZE", Integer.valueOf(100)); // KB
+            seqCl.getMethod("startPreviewSequence", optCl).invoke(seq, opts);
+            cameraSeq = seq;
+            seqRunning = true;
+            Thread t = new Thread(new Runnable() {
+                public void run() {
+                    sequencePump();
+                }
+            }, "rec-seq-pump");
+            t.setDaemon(true);
+            seqThread = t;
+            t.start();
+            lastSeqErr = "";
+            AppLog.i("Rec", "CameraSequence 取流已启动");
+            return true;
+        } catch (Throwable t) {
+            lastSeqErr = shortErr(t);
+            cameraSeq = null;
+            AppLog.w("Rec", "CameraSequence 失败: " + lastSeqErr);
+            return false;
+        }
+    }
+
+    private void stopSequenceLocked() {
+        Thread t = seqThread;
+        seqThread = null;
+        seqRunning = false;
+        if (t != null) {
+            try {
+                t.join(500);
+            } catch (InterruptedException e) {
+            }
+        }
+        Object seq = cameraSeq;
+        cameraSeq = null;
+        if (seq != null) {
+            try {
+                Class<?> seqCl = Class.forName("com.sony.scalar.hardware.CameraSequence");
+                seqCl.getMethod("stopPreviewSequence").invoke(seq);
+                seqCl.getMethod("release").invoke(seq);
+            } catch (Throwable t2) {
+            }
+        }
+    }
+
+    /** 官方 JpegLoader.getJpegData 同款拉帧：getPreviewSequenceFrames(1) → read → release。 */
+    private void sequencePump() {
+        Method getFrames;
+        Method getSize;
+        Method read;
+        Method release;
+        try {
+            Class<?> seqCl = Class.forName("com.sony.scalar.hardware.CameraSequence");
+            Class<?> bufCl = Class.forName("com.sony.scalar.hardware.DeviceBuffer");
+            Class<?> memCl = Class.forName("com.sony.scalar.hardware.DeviceMemory");
+            getFrames = seqCl.getMethod("getPreviewSequenceFrames", int.class);
+            getSize = bufCl.getMethod("getSize");
+            read = bufCl.getMethod("read", java.nio.ByteBuffer.class, int.class, int.class);
+            release = memCl.getMethod("release");
+        } catch (Throwable t) {
+            lastSeqErr = shortErr(t);
+            seqRunning = false;
+            return;
+        }
+        while (seqRunning) {
+            Object seq = cameraSeq;
+            if (seq == null) {
+                break;
+            }
+            try {
+                Object framesObj = getFrames.invoke(seq, Integer.valueOf(1));
+                if (framesObj instanceof Object[]) {
+                    Object[] frames = (Object[]) framesObj;
+                    if (frames.length > 0 && frames[0] != null) {
+                        int size = ((Integer) getSize.invoke(frames[0])).intValue();
+                        if (size > 0 && size <= seqBuf.capacity()) {
+                            seqBuf.rewind();
+                            read.invoke(frames[0], seqBuf, Integer.valueOf(size), Integer.valueOf(0));
+                            byte[] jpeg = new byte[size];
+                            seqBuf.rewind();
+                            seqBuf.get(jpeg);
+                            latestJpeg.set(jpeg);
+                            seqFrames.incrementAndGet();
+                        }
+                        // 官方把整个数组都 release（DeviceMemory 是平台内存，不还就泄漏）
+                        for (int i = 0; i < frames.length; i++) {
+                            if (frames[i] != null) {
+                                try {
+                                    release.invoke(frames[i]);
+                                } catch (Throwable t) {
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                lastSeqErr = shortErr(t);
+            }
+            try {
+                Thread.sleep(30); // 官方 LIVEVIEW_OBTAINING_INTERVAL=30ms
+            } catch (InterruptedException e) {
+                break;
+            }
+        }
+    }
+
+    /** 帧源退回回调路径时补挂一次预览回调（部分 HAL 要求预览起来之后才接受回调）。 */
+    private void rearmPreviewCallbackLocked() {
+        if (camera == null || previewHolder == null) {
+            return;
+        }
+        try {
+            camera.setPreviewCallback(new Camera.PreviewCallback() {
+                public void onPreviewFrame(byte[] data, Camera cam) {
+                    enqueueJpeg(data);
+                }
+            });
+            AppLog.i("Rec", "预览回调已补挂");
+        } catch (Throwable t) {
+            AppLog.w("Rec", "补挂回调: " + shortErr(t));
         }
     }
 
@@ -248,29 +432,48 @@ public final class RecSession {
             shotJpeg = null;
             shotLatch = new CountDownLatch(1);
         }
-        boolean fired = false;
-        synchronized (lock) {
-            // ★ A7R2 实测定版：标准 camera1 快门 takePicture(null,null,null) ——
-            //   相机走自己的拍照-存卡管线（和机身快门一致）。之前用的
-            //   burstableTakePicture() 在真机上从未触发（拍照超时的根因）。
-            try {
-                camera.takePicture(null, null, null);
-                fired = true;
-            } catch (Throwable t) {
-                AppLog.w("Rec", "takePicture: " + shortErr(t));
-            }
-            if (!fired) {
-                // 兜底：个别机型不认标准路径时再试 CameraEx 的私有快门
-                fired = invokeSilent(cameraEx, "burstableTakePicture", null, null);
-                if (!fired) {
-                    lastError = "快门未被相机接受";
-                    return null;
+        lastShootFired = "";
+        lastShootErr = "";
+        shotRejected.set(false);
+        // ★ 快门必须在主线程触发：官方走 ExecutorCreator 专用线程、recipe-lab 在 UI
+        //   线程，PTP 网络线程是唯一没被真机验证过的调用环境。次序也照官方：先
+        //   burstableTakePicture()（智能遥控 SingleProcess 的快门），失败再退
+        //   camera1 takePicture(null,null,null)（recipe-lab 的快门）。
+        mainHandler.post(new Runnable() {
+            public void run() {
+                synchronized (lock) {
+                    if (cameraEx == null && camera == null) {
+                        shotRejected.set(true);
+                        return;
+                    }
+                    boolean fired = invokeSilent(cameraEx, "burstableTakePicture", null, null);
+                    if (fired) {
+                        lastShootFired = "burstable";
+                    } else {
+                        try {
+                            if (camera != null) {
+                                camera.takePicture(null, null, null);
+                                fired = true;
+                                lastShootFired = "takePicture";
+                            }
+                        } catch (Throwable t) {
+                            lastShootErr = shortErr(t);
+                        }
+                    }
+                    if (!fired) {
+                        shotRejected.set(true);
+                    }
                 }
             }
-        }
+        });
         String result = null;
         long deadline = System.currentTimeMillis() + 20000;
         while (result == null && System.currentTimeMillis() < deadline) {
+            if (shotRejected.get()) {
+                lastError = "快门未被相机接受" + (lastShootErr.length() > 0 ? "（" + lastShootErr + "）" : "");
+                AppLog.w("Rec", "shoot: " + lastError);
+                return null;
+            }
             // 路径一：StoreImageCompleteListener / JpegListener 点亮了 latch（精确文件名）
             synchronized (shotLock) {
                 if (shotLatch.getCount() == 0) {
@@ -304,13 +507,17 @@ public final class RecSession {
                 }
             }
         }
+        if (result == null) {
+            // 超时清场：recipe-lab 拍后照做的 cancelTakePicture，把卡在拍照态的 HAL 放回来
+            invokeSilent(cameraEx, "cancelTakePicture", null, null);
+        }
         restartPreviewQuiet();
         if (result != null) {
             lastShotPath = result;
             emit(EV_SHOT, 1, 0);
             return result;
         }
-        lastError = "拍照超时";
+        lastError = "拍照超时（" + (lastShootFired.length() > 0 ? lastShootFired : "未触发") + "）";
         return null;
     }
 
@@ -527,6 +734,16 @@ public final class RecSession {
             SJson.member(sb, "lastShot", lastShotPath);
             int lv = (liveview != null && liveview.isRunning()) ? liveview.port() : 0;
             SJson.member(sb, "lvPort", lv);
+            // 真机排障诊断：帧源、各环节计数、最近一次错误
+            SJson.member(sb, "lvSrc", lvSrc == 1 ? "seq" : lvSrc == 2 ? "cb" : "off");
+            SJson.member(sb, "seqFrames", seqFrames.get());
+            SJson.member(sb, "cbFrames", cbFrames.get());
+            SJson.member(sb, "jpgFrames", jpgFrames.get());
+            SJson.member(sb, "lvClients", liveview != null ? liveview.clients() : 0);
+            SJson.member(sb, "lvSent", liveview != null ? liveview.sentFrames() : 0);
+            SJson.member(sb, "shootFired", lastShootFired);
+            SJson.member(sb, "shootErr", lastShootErr);
+            SJson.member(sb, "seqErr", lastSeqErr);
             Camera.Parameters p = null;
             Object mod = null;
             if (active && camera != null) {
@@ -631,7 +848,12 @@ public final class RecSession {
     }
 
     private void enqueueJpeg(byte[] yuv) {
+        cbFrames.incrementAndGet();
         if (yuv == null || previewW <= 0 || previewH <= 0) {
+            return;
+        }
+        if (seqRunning) {
+            // 官方 CameraSequence 帧源已接手，回调路径不再编码（CPU 留给取流）
             return;
         }
         if (liveview == null || !liveview.isRunning()) {
@@ -650,6 +872,7 @@ public final class RecSession {
                     ByteArrayOutputStream bos = new ByteArrayOutputStream(32 * 1024);
                     img.compressToJpeg(new Rect(0, 0, w, h), 55, bos);
                     latestJpeg.set(bos.toByteArray());
+                    jpgFrames.incrementAndGet();
                 } catch (Throwable t) {
                 } finally {
                     encoding.set(false);
@@ -1117,6 +1340,8 @@ public final class RecSession {
     }
 
     private void stopLiveviewLocked() {
+        stopSequenceLocked();
+        lvSrc = 0;
         if (liveview != null) {
             liveview.stop();
             liveview = null;
@@ -1265,6 +1490,7 @@ public final class RecSession {
         private Thread pumpThread;
         private final List<OutputStream> clients = Collections.synchronizedList(new ArrayList<OutputStream>());
         private final AtomicInteger seq = new AtomicInteger();
+        private final AtomicInteger sent = new AtomicInteger();
         private volatile boolean running;
 
         LiveviewServer(AtomicReference<byte[]> latest) {
@@ -1273,6 +1499,14 @@ public final class RecSession {
 
         int port() {
             return server == null ? 0 : server.getLocalPort();
+        }
+
+        int clients() {
+            return clients.size();
+        }
+
+        int sentFrames() {
+            return sent.get();
         }
 
         boolean isRunning() {
@@ -1359,6 +1593,7 @@ public final class RecSession {
                     try {
                         out.write(frame);
                         out.flush();
+                        sent.incrementAndGet();
                     } catch (Throwable t) {
                         if (dead == null) {
                             dead = new ArrayList<OutputStream>();
