@@ -56,6 +56,9 @@ data class RecState(
     val expModeAvail: List<String> = emptyList(),
     val selfTimer: String = "0",
     val selfTimerAvail: List<String> = emptyList(),
+    // 拍摄质量档位：raw / raw+jpeg / x.fine / fine / std（显示时映射成相机菜单写法）
+    val picFmt: String = "",
+    val picFmtAvail: List<String> = emptyList(),
 )
 
 object RecController {
@@ -307,6 +310,8 @@ object RecController {
         expModeAvail = strList(o, "expModeAvail"),
         selfTimer = o.optString("selfTimer", "0"),
         selfTimerAvail = strList(o, "selfTimerAvail"),
+        picFmt = o.optString("picFmt"),
+        picFmtAvail = strList(o, "picFmtAvail"),
     )
 
     private fun strList(o: JSONObject, key: String): List<String> {

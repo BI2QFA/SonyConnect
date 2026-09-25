@@ -207,6 +207,17 @@ fun RemoteScreen(onClose: () -> Unit) {
                     PropChip("ISO", rec.iso, rec.isoAvail, displayValue = if (rec.iso == "0") "auto" else null) {
                         scope.launch { RecController.setProp("iso", it) }
                     }
+                    PropChip("画质", rec.picFmt, rec.picFmtAvail,
+                        displayValue = when (rec.picFmt) {
+                            "raw" -> "RAW"
+                            "raw+jpeg" -> "RAW+J"
+                            "x.fine" -> "X.FINE"
+                            "fine" -> "FINE"
+                            "std" -> "STD"
+                            else -> null
+                        }) {
+                        scope.launch { RecController.setProp("picFmt", it) }
+                    }
                     StepChip("F", rec.fnumber, {
                         scope.launch { RecController.setProp("fnumber", "-") }
                     }, {
