@@ -5,7 +5,7 @@ import android.graphics.Rect;
 import android.graphics.YuvImage;
 import android.hardware.Camera;
 import android.os.Handler;
-import android.os.Looper;
+import android.os.HandlerThread;
 import android.util.Pair;
 import android.view.SurfaceHolder;
 
@@ -22,7 +22,9 @@ import java.net.Socket;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -98,7 +100,34 @@ public final class RecSession {
     // 快门真值诊断：onShutter 状态（-1 未触发）与 capture 是否真的启动
     private final AtomicInteger lastShutterStatus = new AtomicInteger(-1);
     private final AtomicBoolean captureStarted = new AtomicBoolean(false);
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    // ★ 官方 4.30 同款：拍摄类动作全部在一条专用 HandlerThread 上串行执行
+    //   （官方 ExecutorCreator extends HandlerThread，sHandlerFromMain = new Handler(getLooper())。
+    //   快门触发、对焦、变焦、参数改动在相机 HAL 看来是"同一条控制流"，这是它接受动作的前提之一）。
+    //   主线程只做 UI，PTP 线程只收命令。
+    private HandlerThread camThread;
+    private Handler camHandler;
+
+    /**
+     * open 方式开关（官方 4.30：SRCtrlExecutorCreator 的
+     * {@code isImmediatelyEEStart()=true / isInheritSetting()=false} + setTargetMedia）。
+     * 若真机实测带 opts 打开后取景/快门异常，把这行改成 false 退回 open(0,null)，
+     * 其余修复（快门/对焦/参数）不受影响。
+     */
+    private static final boolean USE_OFFICIAL_OPEN_OPTS = true;
+
+    /** 会话 open 方式诊断：official / official+media / null / null-fallback（REC_GET_STATE 上报）。 */
+    private String optsMode = "";
+    /** 相机媒体 ID（AvindexStore.getExternalMediaIds()[0]）——OpenOptions/录像都用它。 */
+    private String mediaId = "";
+    /** ParametersModifier.getMaxZoomSpeed()：-1=读不到，-2=还没测。 */
+    private int zoomMax = -2;
+    /** 触摸对焦期间临时改掉的对焦模式/对焦区（官方 leaveTouchAFMode 的还原值）。 */
+    private boolean touchAfActive = false;
+    private String savedFocusMode = "";
+    private String savedFocusArea = "";
+    /** 拍照前临时关掉的 RemoteControlMode（官方 setTempRemoteControl 语义）。 */
+    private boolean remoteWasOn = false;
 
     private final Object shotLock = new Object();
     private CountDownLatch shotLatch;
@@ -141,14 +170,32 @@ public final class RecSession {
             }
             lastError = "";
             try {
-                // ★ A7R2 实测定版：OpenOptions 必须传 null —— 之前那套
-                //   setPreview(true)/setInheritSetting/setRecordingMode(0) 自造组合
-                //   打开后相机 HAL 不出帧（LCD 全黑、快门无响应）。recipe-lab-sony-pmca
-                //   在真机上验证过的就是 open(0, null)。
+                startCamThreadLocked();
+                mediaId = readExternalMediaId();
+                // ★ 官方 4.30 的 open 组合（SRCtrlExecutorCreator：
+                //     isImmediatelyEEStart()=true / isInheritSetting()=false；静态模式
+                //     recordingMode=0；setTargetMedia(AvindexStore.getExternalMediaIds()[0])）：
+                //       opts.setPreview(true); opts.setInheritSetting(false);
+                //       opts.setRecordingMode(0); opts.setTargetMedia(media[0]);
+                //   遥控拍摄的完整链路（快门/对焦/参数）都以官方这套会话为前提。
+                //   打不开或组包失败时自动退回 open(0,null)（保底），结果记在 optsMode。
                 cameraExClass = Class.forName("com.sony.scalar.hardware.CameraEx");
                 Class<?> optionsCl = Class.forName("com.sony.scalar.hardware.CameraEx$OpenOptions");
                 Method open = cameraExClass.getMethod("open", int.class, optionsCl);
-                cameraEx = open.invoke(null, Integer.valueOf(0), null);
+                Object opts = USE_OFFICIAL_OPEN_OPTS ? buildOfficialOptions(optionsCl) : null;
+                if (opts != null) {
+                    try {
+                        cameraEx = open.invoke(null, Integer.valueOf(0), opts);
+                        optsMode = (mediaId != null && mediaId.length() > 0) ? "official+media" : "official";
+                    } catch (Throwable t) {
+                        AppLog.w("Rec", "官方 opts 打开失败，退回 null: " + shortErr(t));
+                        cameraEx = null;
+                    }
+                }
+                if (cameraEx == null) {
+                    optsMode = opts == null ? "null" : "null-fallback";
+                    cameraEx = open.invoke(null, Integer.valueOf(0), null);
+                }
                 if (cameraEx == null) {
                     lastError = "CameraEx.open 返回 null";
                     return false;
@@ -163,7 +210,7 @@ public final class RecSession {
                 focusStatus = "idle";
                 recording = false;
                 recSeconds = 0;
-                AppLog.i("Rec", "遥控会话已打开");
+                AppLog.i("Rec", "遥控会话已打开 open=" + optsMode + " 媒体ID=" + mediaId);
                 emit(EV_PROP, 1, 0);
                 // 取景面若已经活着（快速重进），直接把预览接上去
                 if (previewHolder != null) {
@@ -215,11 +262,16 @@ public final class RecSession {
             } catch (Throwable t) {
             }
             try {
+                cancelTouchAfLocked();
+            } catch (Throwable t) {
+            }
+            try {
                 movieLocked(false);
             } catch (Throwable t) {
             }
             releaseQuiet();
             active = false;
+            stopCamThreadLocked();
             focusStatus = "idle";
             AppLog.i("Rec", "遥控会话已关闭");
             emit(EV_PROP, 0, 0);
@@ -441,41 +493,28 @@ public final class RecSession {
         lastShutterStatus.set(-1);
         captureStarted.set(false);
         shotRejected.set(false);
-        // ★ 快门必须在主线程触发：官方走 ExecutorCreator 专用线程、recipe-lab 在 UI
-        //   线程。次序反过来：takePicture(null,null,null) 优先（recipe-lab 在真机上
-        //   用 open(0,null) 这套环境验证过它能拍照存卡），抛异常才降级官方智能遥控的
-        //   burstableTakePicture（上一轮实测它在我们的环境里静默无效）。
-        mainHandler.post(new Runnable() {
+        // ★ 官方链路（SingleProcess.takePicture + NormalExecutor.myTakePicture）：
+        //   ① 拍前临时关掉 RemoteControlMode（官方 setTempRemoteControl(1)）；
+        //   ② 快门主路 = burstableTakePicture —— 官方遥控唯一使用的快门 API
+        //      （camera1 takePicture 是 recipe-lab 那种本地场景验证过的口径）；
+        //   ③ 触发放在专用 HandlerThread 上（官方 ExecutorCreator 同款）；
+        //   ④ 若 2.5 秒内既无 onShutter 也无 capture onStart（burstable 被固件静默
+        //      忽略的情形），再补打一次 camera1 takePicture 兜底。
+        postCam(new Runnable() {
             public void run() {
-                synchronized (lock) {
-                    if (cameraEx == null && camera == null) {
-                        shotRejected.set(true);
-                        return;
-                    }
-                    boolean fired = false;
-                    try {
-                        if (camera != null) {
-                            camera.takePicture(null, null, null);
-                            fired = true;
-                            lastShootFired = "takePicture";
-                        }
-                    } catch (Throwable t) {
-                        lastShootErr = shortErr(t);
-                    }
-                    if (!fired) {
-                        fired = invokeSilent(cameraEx, "burstableTakePicture", null, null);
-                        if (fired) {
-                            lastShootFired = "burstable";
-                        }
-                    }
-                    if (!fired) {
-                        shotRejected.set(true);
-                    }
+                remoteControlOffForCapture();
+                boolean fired = invokeSilent(cameraEx, "burstableTakePicture", null, null);
+                if (fired) {
+                    lastShootFired = "burstable";
+                } else {
+                    lastShootErr = "burstableTakePicture 调用失败";
                 }
             }
         });
         String result = null;
         long deadline = System.currentTimeMillis() + 20000;
+        long fallbackAt = System.currentTimeMillis() + 2500;
+        boolean fallbackFired = false;
         while (result == null && System.currentTimeMillis() < deadline) {
             if (shotRejected.get()) {
                 String reason = lastShootErr.length() > 0 ? lastShootErr : "";
@@ -487,6 +526,7 @@ public final class RecSession {
                 }
                 lastError = "快门未成功" + (reason.length() > 0 ? "（" + reason + "）" : "");
                 AppLog.w("Rec", "shoot: " + lastError);
+                captureCleanup();
                 return null;
             }
             // 路径一：StoreImageCompleteListener / JpegListener 点亮了 latch（精确文件名）
@@ -514,6 +554,24 @@ public final class RecSession {
                     }
                 }
             }
+            // 兜底：burstable 若被固件静默忽略（fork 在 A7R2 上见过这种"无异常但无动作"），
+            // 2.5 秒内既无 onShutter 也无 capture onStart，就补打一次 camera1 takePicture
+            if (result == null && !fallbackFired && System.currentTimeMillis() > fallbackAt
+                    && lastShutterStatus.get() == -1 && !captureStarted.get()) {
+                fallbackFired = true;
+                postCam(new Runnable() {
+                    public void run() {
+                        if (camera != null) {
+                            try {
+                                camera.takePicture(null, null, null);
+                                lastShootFired = "burstable+takePicture";
+                            } catch (Throwable t) {
+                                lastShootErr = shortErr(t);
+                            }
+                        }
+                    }
+                });
+            }
             if (result == null) {
                 try {
                     Thread.sleep(200);
@@ -522,13 +580,10 @@ public final class RecSession {
                 }
             }
         }
-        if (result == null) {
-            // 超时清场：recipe-lab 拍后照做的 cancelTakePicture，把卡在拍照态的 HAL 放回来
-            invokeSilent(cameraEx, "cancelTakePicture", null, null);
-        }
-        restartPreviewQuiet();
+        captureCleanup();
         if (result != null) {
             lastShotPath = result;
+            AppLog.i("Rec", "拍照完成 " + result + " [" + lastShootFired + " 快门" + lastShutterStatus.get() + "]");
             emit(EV_SHOT, 1, 0);
             return result;
         }
@@ -538,6 +593,23 @@ public final class RecSession {
                 + " 启动" + (captureStarted.get() ? 1 : 0)
                 + " 抑制" + inhibitionInfo() + "）";
         return null;
+    }
+
+    /**
+     * 拍照收尾（在 cam 线程上）：没成功就 cancelTakePicture（官方在 onShutter≠0 时也这么做）、
+     * 还原 RemoteControlMode（官方 setTempRemoteControl(0)）、恢复预览。
+     */
+    private void captureCleanup() {
+        runOnCam(new CamOp() {
+            public boolean run() {
+                if (lastShutterStatus.get() != 0) {
+                    invokeSilent(cameraEx, "cancelTakePicture", null, null);
+                }
+                remoteControlRestore();
+                restartPreviewQuiet();
+                return true;
+            }
+        }, 8000);
     }
 
     /** CameraEx.getInhibitionInfo()（拍照抑制原因位图；0=无抑制，-1=读不到）。 */
@@ -630,18 +702,31 @@ public final class RecSession {
         return best;
     }
 
-    public boolean halfPress(boolean on) {
+    /**
+     * 半按对焦。官方 4.30 的链路（CameraOperationHalfPressShutter → BaseShootingExecutor.autoFocus）
+     * 只有一条：**camera1 {@code camera.autoFocus(cb)}**，松开是 {@code camera.cancelAutoFocus()}。
+     * 官方全库从不调用 {@code executeAutoFocusStartTrigger}；{@code startDirectShutter} 只在
+     * RX100 系"直连快门"硬件（SpinalExecutor）里用——两者都不是 A6300 遥控对焦的路子。
+     */
+    public boolean halfPress(final boolean on) {
         synchronized (lock) {
             if (!active || cameraEx == null) {
                 lastError = "未进入遥控";
                 return false;
             }
-            if (on) {
-                focusStatus = "working";
-                boolean ok = invokeSilent(cameraEx, "executeAutoFocusStartTrigger",
-                        new Class[]{boolean.class, String.class},
-                        new Object[]{Boolean.TRUE, null});
-                if (!ok && camera != null) {
+            if (on && touchAfActive) {
+                return false; // 官方：触摸对焦进行中不响应半按
+            }
+        }
+        return runOnCam(new CamOp() {
+            public boolean run() {
+                if (on) {
+                    focusStatus = "working";
+                    emit(EV_FOCUS, 3, 0);
+                    if (camera == null) {
+                        lastError = "camera=null";
+                        return false;
+                    }
                     try {
                         camera.autoFocus(new Camera.AutoFocusCallback() {
                             public void onAutoFocus(boolean success, Camera c) {
@@ -649,70 +734,142 @@ public final class RecSession {
                                 emit(EV_FOCUS, success ? 1 : 0, 0);
                             }
                         });
-                        ok = true;
+                        return true;
                     } catch (Throwable t) {
                         lastError = shortErr(t);
+                        return false;
                     }
                 }
-                invokeSilent(cameraEx, "startDirectShutter", null, null);
-                return ok;
-            }
-            focusStatus = "idle";
-            if (camera != null) {
-                try {
-                    camera.cancelAutoFocus();
-                } catch (Throwable t) {
+                focusStatus = "idle";
+                if (camera != null) {
+                    try {
+                        camera.cancelAutoFocus();
+                    } catch (Throwable t) {
+                    }
                 }
-            }
-            invokeSilent(cameraEx, "executeAutoFocusStartTrigger",
-                    new Class[]{boolean.class, String.class},
-                    new Object[]{Boolean.FALSE, null});
-            Class<?> cb = load("com.sony.scalar.hardware.CameraEx$DirectShutterStoppedCallback");
-            invokeSilent(cameraEx, "stopDirectShutter", new Class[]{cb}, new Object[]{null});
-            emit(EV_FOCUS, 0, 0);
-            return true;
-        }
-    }
-
-    public boolean zoom(int dir, int speed) {
-        synchronized (lock) {
-            if (!active || cameraEx == null) {
-                lastError = "未进入遥控";
-                return false;
-            }
-            if (dir == ZOOM_STOP) {
-                return invokeSilent(cameraEx, "stopZoom", null, null);
-            }
-            int d = dir == ZOOM_WIDE ? 1 : 0;
-            int sp = speed <= 0 ? 1 : speed;
-            return invokeSilent(cameraEx, "startZoom",
-                    new Class[]{int.class, int.class},
-                    new Object[]{Integer.valueOf(d), Integer.valueOf(sp)});
-        }
-    }
-
-    public boolean touchAf(float nx, float ny) {
-        synchronized (lock) {
-            if (!active || cameraEx == null) {
-                lastError = "未进入遥控";
-                return false;
-            }
-            if (nx < 0 || ny < 0) {
-                invokeSilent(cameraEx, "stopTrackingFocus", null, null);
+                emit(EV_FOCUS, 0, 0);
                 return true;
             }
-            int w = previewW > 0 ? previewW : 640;
-            int h = previewH > 0 ? previewH : 480;
-            int x = (int) (nx * w);
-            int y = (int) (ny * h);
-            if (x < 0) x = 0;
-            if (y < 0) y = 0;
-            if (x >= w) x = w - 1;
-            if (y >= h) y = h - 1;
-            return invokeSilent(cameraEx, "startTrackingFocus",
-                    new Class[]{int.class, int.class},
-                    new Object[]{Integer.valueOf(x), Integer.valueOf(y)});
-        }
+        }, 8000);
+    }
+
+    /**
+     * 变焦（官方 DigitalZoomController.startZoom）。
+     * 官方速度 = {@code getMaxZoomSpeed()/8}（按住连续）或 {@code /4}（短推），
+     * 且做 {@code 0 ≤ speed ≤ max} 校验；fork 初版固定 speed=1 —— 合法但通常慢到
+     * "看起来没反应"。
+     */
+    public boolean zoom(final int dir, final int speed) {
+        return runOnCam(new CamOp() {
+            public boolean run() {
+                synchronized (lock) {
+                    if (!active || cameraEx == null) {
+                        lastError = "未进入遥控";
+                        return false;
+                    }
+                }
+                if (dir == ZOOM_STOP) {
+                    return invokeSilent(cameraEx, "stopZoom", null, null);
+                }
+                int max = maxZoomSpeed();
+                int sp;
+                if (speed > 1) {
+                    sp = speed; // 手机端显式指定的档位（预留）
+                } else {
+                    sp = max > 0 ? Math.max(1, max / 8) : 1;
+                }
+                if (max > 0 && sp > max) {
+                    sp = max;
+                }
+                int d = dir == ZOOM_WIDE ? 1 : 0;
+                AppLog.i("Rec", "zoom dir=" + d + " speed=" + sp + " max=" + max);
+                return invokeSilent(cameraEx, "startZoom",
+                        new Class[]{int.class, int.class},
+                        new Object[]{Integer.valueOf(d), Integer.valueOf(sp)});
+            }
+        }, 5000);
+    }
+
+    /**
+     * 触摸对焦（官方 CameraOperationTouchAFPosition.set 的移植）。
+     *
+     * <p>官方口径：手机坐标 0~1 → 相机侧 **-1000 ~ +1000** 的 scalar 坐标
+     * （官方 net2scalar = 2000·net/100 − 1000），走
+     * {@code ParametersModifier.setFocusPoint(x,y) + camera.setParameters()}；
+     * 期间对焦区切 flex-spot、对焦模式强制 DMF（不支持则 af-s），
+     * 再 {@code setQuickAutoFocus("af_woaf") + camera.autoFocus()}。
+     *
+     * <p>fork 初版用的 {@code startTrackingFocus} 要求平台 pfApi≥8（官方 FocusModeController
+     * 的门槛），A6300 不满足；官方 4.30 的触摸对焦也不走这条路。
+     */
+    public boolean touchAf(final float nx, final float ny) {
+        return runOnCam(new CamOp() {
+            public boolean run() {
+                synchronized (lock) {
+                    if (!active || cameraEx == null) {
+                        lastError = "未进入遥控";
+                        return false;
+                    }
+                }
+                if (nx < 0 || ny < 0) {
+                    cancelTouchAfLocked();
+                    emit(EV_FOCUS, 0, 0);
+                    return true;
+                }
+                if (camera == null) {
+                    lastError = "camera=null";
+                    return false;
+                }
+                int sx = (int) Math.round(2000.0 * nx - 1000.0);
+                int sy = (int) Math.round(2000.0 * ny - 1000.0);
+                if (sx < -1000) sx = -1000;
+                if (sx > 1000) sx = 1000;
+                if (sy < -1000) sy = -1000;
+                if (sy > 1000) sy = 1000;
+                try {
+                    Camera.Parameters p = camera.getParameters();
+                    Object mod = modifier(p);
+                    if (p == null || mod == null) {
+                        lastError = "参数不可用";
+                        return false;
+                    }
+                    if (!touchAfActive) {
+                        Object fm = invoke(mod, "getAutoFocusMode", null, null);
+                        savedFocusMode = fm == null ? "" : String.valueOf(fm);
+                        Object fa = invoke(mod, "getFocusAreaMode", null, null);
+                        savedFocusArea = fa == null ? "" : String.valueOf(fa);
+                        touchAfActive = true;
+                        // 官方：对焦区切 flex-spot（app/PF 两个域里这个名字同字面值）
+                        if (!"flex-spot".equalsIgnoreCase(savedFocusArea)) {
+                            invokeSilent(mod, "setFocusAreaMode", new Class[]{String.class},
+                                    new Object[]{"flex-spot"});
+                        }
+                        String prefer = pickTouchAfFocusMode(mod);
+                        if (prefer != null && prefer.length() > 0) {
+                            invokeSilent(mod, "setAutoFocusMode", new Class[]{String.class},
+                                    new Object[]{prefer});
+                        }
+                    }
+                    invokeSilent(mod, "setFocusPoint", new Class[]{int.class, int.class},
+                            new Object[]{Integer.valueOf(sx), Integer.valueOf(sy)});
+                    camera.setParameters(p);
+                    try {
+                        camera.cancelAutoFocus();
+                    } catch (Throwable t) {
+                    }
+                    invokeSilent(cameraEx, "setQuickAutoFocus",
+                            new Class[]{String.class}, new Object[]{"af_woaf"});
+                    camera.autoFocus(null);
+                    focusStatus = "working";
+                    emit(EV_FOCUS, 3, 0);
+                    AppLog.i("Rec", "touchAf scalar=" + sx + "," + sy);
+                    return true;
+                } catch (Throwable t) {
+                    lastError = shortErr(t);
+                    return false;
+                }
+            }
+        }, 10000);
     }
 
     public boolean movie(boolean start) {
@@ -721,7 +878,19 @@ public final class RecSession {
         }
     }
 
-    public boolean setProp(String key, String value) {
+    /** 参数设置统一入口：整段跑在 cam 线程上（官方遥控的参数改动同样在拍摄线程）。 */
+    public boolean setProp(final String key, final String value) {
+        final boolean[] out = new boolean[1];
+        runOnCam(new CamOp() {
+            public boolean run() {
+                out[0] = setPropLocked(key, value);
+                return out[0];
+            }
+        }, 8000);
+        return out[0];
+    }
+
+    private boolean setPropLocked(String key, String value) {
         synchronized (lock) {
             if (!active) {
                 lastError = "未进入遥控";
@@ -732,27 +901,28 @@ public final class RecSession {
             }
             try {
                 if ("fnumber".equals(key)) {
+                    // 官方 CameraOperationFNumber：adjustAperture(索引差)；单步就是 ±1
                     if ("+".equals(value)) {
-                        boolean ok = invokeSilent(cameraEx, "incrementAperture", null, null);
+                        boolean ok = adjustAperture(1);
                         if (ok) emit(EV_PROP, 0, 0);
                         return ok;
                     }
                     if ("-".equals(value)) {
-                        boolean ok = invokeSilent(cameraEx, "decrementAperture", null, null);
+                        boolean ok = adjustAperture(-1);
                         if (ok) emit(EV_PROP, 0, 0);
                         return ok;
                     }
-                    return stepToward("getAperture", "incrementAperture", "decrementAperture",
-                            parseAperture(value));
+                    return stepToward(parseAperture(value));
                 }
                 if ("shutter".equals(key)) {
+                    // 官方 CameraOperationShutterSpeed：adjustShutterSpeed(索引差)；单步就是 ±1
                     if ("+".equals(value)) {
-                        boolean ok = invokeSilent(cameraEx, "incrementShutterSpeed", null, null);
+                        boolean ok = adjustShutterSpeed(1);
                         if (ok) emit(EV_PROP, 0, 0);
                         return ok;
                     }
                     if ("-".equals(value)) {
-                        boolean ok = invokeSilent(cameraEx, "decrementShutterSpeed", null, null);
+                        boolean ok = adjustShutterSpeed(-1);
                         if (ok) emit(EV_PROP, 0, 0);
                         return ok;
                     }
@@ -857,6 +1027,11 @@ public final class RecSession {
             SJson.member(sb, "shutterSt", lastShutterStatus.get());
             SJson.member(sb, "capStart", captureStarted.get() ? 1 : 0);
             SJson.member(sb, "inhibit", active ? inhibitionInfo() : 0);
+            // 修复版新增诊断：open 方式 / 媒体 ID / 变焦上限 / 触摸对焦态
+            SJson.member(sb, "optsMode", optsMode);
+            SJson.member(sb, "mediaId", mediaId);
+            SJson.member(sb, "zoomMax", zoomMax == -2 ? -1 : zoomMax);
+            SJson.member(sb, "touchAf", touchAfActive);
             Camera.Parameters p = null;
             Object mod = null;
             if (active && camera != null) {
@@ -1219,6 +1394,273 @@ public final class RecSession {
         }
     }
 
+    // ============ 专用拍摄线程（官方 ExecutorCreator 同款） ============
+
+    private interface CamOp {
+        boolean run();
+    }
+
+    private void startCamThreadLocked() {
+        if (camHandler != null) {
+            return;
+        }
+        HandlerThread t = new HandlerThread("rec-cam");
+        t.start();
+        camThread = t;
+        camHandler = new Handler(t.getLooper());
+    }
+
+    private void stopCamThreadLocked() {
+        HandlerThread t = camThread;
+        camThread = null;
+        camHandler = null;
+        if (t != null) {
+            try {
+                t.quit();
+            } catch (Throwable x) {
+            }
+        }
+    }
+
+    private void postCam(Runnable r) {
+        Handler h = camHandler;
+        if (h != null) {
+            h.post(r);
+        } else {
+            r.run();
+        }
+    }
+
+    /**
+     * 把一次相机操作放到专用线程上执行并等结果。
+     *
+     * <p>官方遥控的所有拍摄动作都在同一条 HandlerThread 上串行；把快门/对焦/参数
+     * 散布在 UI 线程与 PTP 线程上执行，是 fork 初版"除了取景全都不灵"的可疑原因之一。
+     */
+    private boolean runOnCam(CamOp op, long timeoutMs) {
+        Handler h = camHandler;
+        if (h == null) {
+            return op.run();
+        }
+        final CamOp o = op;
+        final boolean[] out = new boolean[1];
+        final CountDownLatch latch = new CountDownLatch(1);
+        boolean posted = h.post(new Runnable() {
+            public void run() {
+                try {
+                    out[0] = o.run();
+                } catch (Throwable t) {
+                    out[0] = false;
+                } finally {
+                    latch.countDown();
+                }
+            }
+        });
+        if (!posted) {
+            return op.run();
+        }
+        try {
+            if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+                return false;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+        return out[0];
+    }
+
+    // ============ 官方 open 组合 / 媒体 ID ============
+
+    /** 官方同款 OpenOptions；任何一步失败返回 null（调用方退回 open(0,null)）。 */
+    private Object buildOfficialOptions(Class<?> optionsCl) {
+        try {
+            Object opts = optionsCl.newInstance();
+            optionsCl.getMethod("setPreview", boolean.class).invoke(opts, Boolean.TRUE);
+            optionsCl.getMethod("setInheritSetting", boolean.class).invoke(opts, Boolean.FALSE);
+            try {
+                optionsCl.getMethod("setRecordingMode", int.class).invoke(opts, Integer.valueOf(0));
+            } catch (Throwable t) {
+            }
+            if (mediaId != null && mediaId.length() > 0) {
+                try {
+                    optionsCl.getMethod("setTargetMedia", String.class).invoke(opts, mediaId);
+                } catch (Throwable t) {
+                }
+            }
+            return opts;
+        } catch (Throwable t) {
+            AppLog.w("Rec", "OpenOptions 组包失败: " + shortErr(t));
+            return null;
+        }
+    }
+
+    /** AvindexStore.getExternalMediaIds()[0]（官方静态/录像的目标媒体 ID）。 */
+    private static String readExternalMediaId() {
+        try {
+            Class<?> av = Class.forName("com.sony.scalar.provider.AvindexStore");
+            Object r = av.getMethod("getExternalMediaIds").invoke(null);
+            if (r instanceof String[] && ((String[]) r).length > 0) {
+                return ((String[]) r)[0];
+            }
+        } catch (Throwable t) {
+        }
+        return "";
+    }
+
+    // ============ RemoteControlMode（官方 setTempRemoteControl 语义） ============
+
+    /** 官方 NormalExecutor.myTakePicture 第一步：拍前若 RemoteControlMode 开着，临时关掉。 */
+    private void remoteControlOffForCapture() {
+        remoteWasOn = false;
+        try {
+            Camera.Parameters p = camera == null ? null : camera.getParameters();
+            Object mod = modifier(p);
+            if (p == null || mod == null) {
+                return;
+            }
+            Object cur = invoke(mod, "getRemoteControlMode", null, null);
+            if (cur instanceof Boolean && ((Boolean) cur).booleanValue()) {
+                remoteWasOn = true;
+                invokeSilent(mod, "setRemoteControlMode", new Class[]{boolean.class},
+                        new Object[]{Boolean.FALSE});
+                camera.setParameters(p);
+                AppLog.i("Rec", "拍照前临时关闭 RemoteControlMode");
+            }
+        } catch (Throwable t) {
+        }
+    }
+
+    /** 官方 setTempRemoteControl(0)：拍照结束把 RemoteControlMode 还原。 */
+    private void remoteControlRestore() {
+        if (!remoteWasOn) {
+            return;
+        }
+        remoteWasOn = false;
+        try {
+            Camera.Parameters p = camera == null ? null : camera.getParameters();
+            Object mod = modifier(p);
+            if (p != null && mod != null) {
+                invokeSilent(mod, "setRemoteControlMode", new Class[]{boolean.class},
+                        new Object[]{Boolean.TRUE});
+                camera.setParameters(p);
+                AppLog.i("Rec", "RemoteControlMode 已还原");
+            }
+        } catch (Throwable t) {
+        }
+    }
+
+    // ============ 光圈/快门（官方 adjust* 一步到位） ============
+
+    /**
+     * 官方 CameraOperationFNumber.set：adjustAperture(目标索引 - 当前索引)。
+     * 官方 F_TABLE 升序（binarySearch 直接可用）→ adjust(+1) 走更大的光圈值。
+     */
+    private boolean adjustAperture(int diff) {
+        return invokeSilent(cameraEx, "adjustAperture", new Class[]{int.class},
+                new Object[]{Integer.valueOf(diff)});
+    }
+
+    /**
+     * 官方 CameraOperationShutterSpeed.set：adjustShutterSpeed(当前索引 - 目标索引)。
+     * 官方快门表按曝光时间升序（1/32000 … 30" … BULB）→ adjust(+1) 走更短的曝光。
+     */
+    private boolean adjustShutterSpeed(int diff) {
+        return invokeSilent(cameraEx, "adjustShutterSpeed", new Class[]{int.class},
+                new Object[]{Integer.valueOf(diff)});
+    }
+
+    // ============ 变焦上限（官方 getMaxZoomSpeed/8） ============
+
+    private int maxZoomSpeed() {
+        if (zoomMax != -2) {
+            return zoomMax;
+        }
+        int v = -1;
+        try {
+            Object sup = invoke(cameraEx, "getSupportedParameters",
+                    new Class[]{int.class}, new Object[]{Integer.valueOf(0)});
+            if (sup instanceof Camera.Parameters) {
+                Object mod = modifier((Camera.Parameters) sup);
+                Object r = invoke(mod, "getMaxZoomSpeed", null, null);
+                if (r instanceof Number) {
+                    v = ((Number) r).intValue();
+                }
+            }
+        } catch (Throwable t) {
+        }
+        zoomMax = v;
+        return v;
+    }
+
+    // ============ 触摸对焦的还原（官方 leaveTouchAFMode） ============
+
+    /** 离开触摸对焦：还原对焦模式/对焦区，撤掉 quick AF（调用方保证已在 cam 线程）。 */
+    private void cancelTouchAfLocked() {
+        Camera cam = camera;
+        if (cam != null) {
+            try {
+                cam.cancelAutoFocus();
+            } catch (Throwable t) {
+            }
+        }
+        if (cameraEx != null) {
+            invokeSilent(cameraEx, "resetQuickAutoFocus",
+                    new Class[]{String.class}, new Object[]{"af_woaf"});
+        }
+        if (cam != null) {
+            try {
+                Camera.Parameters p = cam.getParameters();
+                Object mod = modifier(p);
+                if (touchAfActive && savedFocusMode != null && savedFocusMode.length() > 0 && mod != null) {
+                    invokeSilent(mod, "setAutoFocusMode", new Class[]{String.class},
+                            new Object[]{savedFocusMode});
+                    cam.setParameters(p);
+                    AppLog.i("Rec", "触摸对焦退出：对焦模式还原为 " + savedFocusMode);
+                }
+                if (touchAfActive && savedFocusArea != null && savedFocusArea.length() > 0 && mod != null) {
+                    invokeSilent(mod, "setFocusAreaMode", new Class[]{String.class},
+                            new Object[]{savedFocusArea});
+                    cam.setParameters(p);
+                    AppLog.i("Rec", "触摸对焦退出：对焦区还原为 " + savedFocusArea);
+                }
+            } catch (Throwable t) {
+            }
+        }
+        touchAfActive = false;
+        savedFocusMode = "";
+        savedFocusArea = "";
+        focusStatus = "idle";
+    }
+
+    /**
+     * 触摸对焦时的对焦模式：官方从可用列表里优先 DMF，其次 af-s。
+     * 这里在 getSupportedAutoFocusModes() 的字符串里找（大小写不敏感），原样回设。
+     */
+    private static String pickTouchAfFocusMode(Object mod) {
+        Object list = invoke(mod, "getSupportedAutoFocusModes", null, null);
+        if (!(list instanceof List)) {
+            return null;
+        }
+        List l = (List) list;
+        String afs = null;
+        for (int i = 0; i < l.size(); i++) {
+            Object o = l.get(i);
+            if (o == null) {
+                continue;
+            }
+            String s = String.valueOf(o);
+            String low = s.toLowerCase(Locale.US);
+            if ("dmf".equals(low)) {
+                return s;
+            }
+            if ("af-s".equals(low)) {
+                afs = s;
+            }
+        }
+        return afs;
+    }
+
     private Object modifier(Camera.Parameters p) {
         if (cameraEx == null || p == null) {
             return null;
@@ -1423,14 +1865,15 @@ public final class RecSession {
         }
     }
 
-    private boolean stepToward(String getter, String inc, String dec, int target) {
+    /** 光圈绝对值：按官方 adjustAperture 逐步逼近（F 表升序 → 目标更大则 adjust(+1)）。 */
+    private boolean stepToward(int target) {
         if (target <= 0 || cameraEx == null) {
             return false;
         }
-        for (int i = 0; i < 80; i++) {
+        for (int i = 0; i < 40; i++) {
             Camera.Parameters p = camera == null ? null : camera.getParameters();
             Object mod = modifier(p);
-            Object cur = invoke(mod, getter, null, null);
+            Object cur = invoke(mod, "getAperture", null, null);
             int now = cur instanceof Number ? ((Number) cur).intValue() : 0;
             if (now == 0) {
                 return false;
@@ -1438,21 +1881,18 @@ public final class RecSession {
             if (Math.abs(now - target) <= 2) {
                 return true;
             }
-            if (now < target) {
-                invokeSilent(cameraEx, inc, null, null);
-            } else {
-                invokeSilent(cameraEx, dec, null, null);
-            }
+            adjustAperture(now < target ? 1 : -1);
         }
         return true;
     }
 
+    /** 快门绝对值：按官方 adjustShutterSpeed 逐步逼近（曝光时间升序 → 要更长则 adjust(-1)）。 */
     private boolean stepShutter(String value) {
         double target = parseShutterSec(value);
         if (target <= 0 || cameraEx == null) {
             return false;
         }
-        for (int i = 0; i < 80; i++) {
+        for (int i = 0; i < 40; i++) {
             Camera.Parameters p = camera == null ? null : camera.getParameters();
             Object mod = modifier(p);
             double now = parseShutterSec(formatShutter(invoke(mod, "getShutterSpeed", null, null)));
@@ -1463,11 +1903,7 @@ public final class RecSession {
             if (ratio > 0.92 && ratio < 1.08) {
                 return true;
             }
-            if (now < target) {
-                invokeSilent(cameraEx, "incrementShutterSpeed", null, null);
-            } else {
-                invokeSilent(cameraEx, "decrementShutterSpeed", null, null);
-            }
+            adjustShutterSpeed(now > target ? 1 : -1);
         }
         return true;
     }
@@ -1503,15 +1939,25 @@ public final class RecSession {
             }
             try {
                 Class<?> mrCl = Class.forName("com.sony.scalar.media.MediaRecorder");
+                String mid = mediaId;
+                if (mid == null || mid.length() == 0) {
+                    mid = readExternalMediaId();
+                    mediaId = mid;
+                }
                 mediaRecorder = mrCl.getConstructor().newInstance();
                 invokeSilent(mediaRecorder, "setCamera", new Class[]{cameraExClass},
                         new Object[]{cameraEx});
                 int vs = constInt("com.sony.scalar.media.MediaRecorder$VideoSource", "CAMERA", 1);
-                int as = constInt("com.sony.scalar.media.MediaRecorder$AudioSource", "CAMCORDER", 5);
                 invokeSilent(mediaRecorder, "setVideoSource", new Class[]{int.class},
                         new Object[]{Integer.valueOf(vs)});
-                invokeSilent(mediaRecorder, "setAudioSource", new Class[]{int.class},
-                        new Object[]{Integer.valueOf(as)});
+                // ★ 官方 ExecutorCreator 的录像三件套：setVideoSource(1) + setOutputMedia(媒体ID)
+                //   + setCamera(cameraEx)。缺 setOutputMedia 时 prepare() 必炸（fork 初版就没设）；
+                //   官方也**不设** setAudioSource（fork 初版多设了 CAMCORDER，属可疑项）。
+                if (mid != null && mid.length() > 0) {
+                    invokeSilent(mediaRecorder, "setOutputMedia", new Class[]{String.class},
+                            new Object[]{mid});
+                }
+                AppLog.i("Rec", "录像媒体 ID=" + mid);
                 invoke(mediaRecorder, "prepare", null, null);
                 invoke(mediaRecorder, "start", null, null);
                 recording = true;

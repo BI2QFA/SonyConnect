@@ -82,13 +82,29 @@ echo "[5/6] zipalign ..."
 echo "[6/6] sign ..."
 # ★ 与 ~/.android/debug.keystore 同钥：相机端覆盖安装要求签名一致
 #   （换钥 = 先卸载 = 抹掉相机上的配对数据，绝对不行）
+# ★★ 必须 v1-only（--v2-signing-enabled false）：2026-09-25 实测定论 ——
+#   相机 flash 的 app 分区转储里 21 个已安装应用（索尼官方 19 个 PlayMemories、
+#   Tweak、最早的 bi2qfa.sony.ftp）全部 v1-only、无一含 APK Signing Block；
+#   带 v2 块的包（apksigner 的默认产物）装到相机上会在 Installing 阶段被拒，
+#   PMCA 报 "Communication error 100: Error completed"。apksigner 默认会给
+#   minSdk10 的包加 v2 块，必须显式关掉。
 KS="/c/Users/93849/.android/debug.keystore"
 "$JDK/java.exe" -jar "$BT26/lib/apksigner.jar" sign \
   --ks "$KS" --ks-pass pass:android --key-pass pass:android \
-  --min-sdk-version 10 --out "$APK" "$OUT/aligned.apk"
+  --min-sdk-version 10 --v2-signing-enabled false --out "$APK" "$OUT/aligned.apk"
 
 # ===== 官方兼容口径自检（任一不符即失败）=====
 echo "===== self-check: sony-official compatibility contract ====="
+# ★ 不得含 APK Signing Block（v2/v3 签名块）—— 相机拒装的直接原因
+if python -c "
+import sys
+d=open(sys.argv[1],'rb').read()
+sys.exit(1 if b'APK Sig Block 42' in d else 0)
+" "$APK" 2>/dev/null; then
+  echo "OK: 无 APK Signing Block（v1-only 签名）"
+else
+  echo "✗ APK 含 v2/v3 签名块 —— 相机会拒装，必须 --v2-signing-enabled false"; exit 1
+fi
 BADGING=$("$BT26/aapt.exe" dump badging "$APK")
 echo "$BADGING" | grep -q "sdkVersion:'10'"        || { echo "✗ minSdkVersion 不是 10"; exit 1; }
 echo "$BADGING" | grep -q "targetSdkVersion:'10'"  || { echo "✗ targetSdkVersion 不是 10"; exit 1; }

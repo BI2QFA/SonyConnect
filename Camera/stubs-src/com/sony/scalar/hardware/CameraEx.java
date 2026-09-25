@@ -27,6 +27,14 @@ public class CameraEx {
         throw new RuntimeException("stub");
     }
 
+    public Camera.Parameters getSupportedParameters(int mode) {
+        throw new RuntimeException("stub");
+    }
+
+    public int getInhibitionInfo() {
+        throw new RuntimeException("stub");
+    }
+
     public ParametersModifier createParametersModifier(Camera.Parameters params) {
         throw new RuntimeException("stub");
     }
@@ -67,6 +75,15 @@ public class CameraEx {
         throw new RuntimeException("stub");
     }
 
+    /** 官方 FocusModeController.setQuickAutoFocus：bf 行为串（遥控用 "af_woaf"）。 */
+    public void setQuickAutoFocus(String mode) {
+        throw new RuntimeException("stub");
+    }
+
+    public void resetQuickAutoFocus(String mode) {
+        throw new RuntimeException("stub");
+    }
+
     public void executeAutoFocusStartTrigger(boolean start, String mode) {
         throw new RuntimeException("stub");
     }
@@ -100,6 +117,15 @@ public class CameraEx {
     }
 
     public void decrementShutterSpeed() {
+        throw new RuntimeException("stub");
+    }
+
+    /** 官方遥控用的光圈/快门步进（索引差，见 CameraOperationFNumber/ShutterSpeed）。 */
+    public void adjustAperture(int diff) {
+        throw new RuntimeException("stub");
+    }
+
+    public void adjustShutterSpeed(int diff) {
         throw new RuntimeException("stub");
     }
 
@@ -203,6 +229,32 @@ public class CameraEx {
         }
 
         public void setDriveMode(String mode) {
+            throw new RuntimeException("stub");
+        }
+
+        /** 触摸对焦的焦点坐标（-1000 ~ +1000，官方 net2scalar 坐标系）。 */
+        public void setFocusPoint(int centerX, int centerY) {
+            throw new RuntimeException("stub");
+        }
+
+        /** 官方变焦速度上限（startZoom 的 speed 必须 ≤ 它）。 */
+        public int getMaxZoomSpeed() {
+            throw new RuntimeException("stub");
+        }
+
+        public List getSupportedQuickAutoFocus() {
+            throw new RuntimeException("stub");
+        }
+
+        public boolean isSupportedRemoteControlMode() {
+            throw new RuntimeException("stub");
+        }
+
+        public boolean getRemoteControlMode() {
+            throw new RuntimeException("stub");
+        }
+
+        public void setRemoteControlMode(boolean on) {
             throw new RuntimeException("stub");
         }
     }

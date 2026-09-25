@@ -24,6 +24,27 @@ android {
         // 编译桩绝不进 APK（真机用框架里的真实类解析）
         exclude 'com/sony/**'
     }
+
+    signingConfigs {
+        // ★ 相机平台只认 v1（JAR）签名：带 v2 签名块的包会在 Installing 阶段被拒
+        //   （PMCA 报 "Communication error 100: Error completed"；2026-09-25 实测：
+        //   相机 flash 的 app 分区转储里 21 个已安装应用全部 v1-only）。
+        //   AGP 默认给 debug 包加 v2 块，这里显式关掉。
+        camdebug {
+            storeFile file(System.getProperty("user.home") + "/.android/debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+            v1SigningEnabled true
+            v2SigningEnabled false
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.camdebug
+        }
+    }
 }
 
 dependencies {
