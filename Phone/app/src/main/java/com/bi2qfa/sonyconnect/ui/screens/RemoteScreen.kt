@@ -41,11 +41,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.bi2qfa.sonyconnect.core.RecController
 import kotlinx.coroutines.launch
+import android.app.Activity
+import android.content.pm.ActivityInfo
 
 @Composable
 fun RemoteScreen(onClose: () -> Unit) {
@@ -56,9 +59,15 @@ fun RemoteScreen(onClose: () -> Unit) {
     val busy = RecController.busy
     val err = RecController.error
 
+    // 遥控界面跟随手机旋转（其余界面保持竖屏锁定）；离开时还原
+    val activity = LocalContext.current as? Activity
     DisposableEffect(Unit) {
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
         scope.launch { RecController.enter() }
-        onDispose { scope.launch { RecController.leave() } }
+        onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            scope.launch { RecController.leave() }
+        }
     }
 
     LaunchedEffect(RecController.sessionActive) {
@@ -95,14 +104,34 @@ fun RemoteScreen(onClose: () -> Unit) {
             Image(
                 bitmap = preview.asImageBitmap(),
                 contentDescription = "实时取景",
-                contentScale = ContentScale.Crop,
+                // Fit：完整呈现取景画面（不裁切）；点按坐标按实际显示区域
+                // 换算成帧内千分比，黑边区域的点按会被钳制到边缘
+                contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
                         detectTapGestures { offset ->
-                            val nx = offset.x / size.width
-                            val ny = offset.y / size.height
-                            scope.launch { RecController.touchAf(nx, ny) }
+                            val bmp = RecController.preview ?: return@detectTapGestures
+                            val bw = bmp.width
+                            val bh = bmp.height
+                            if (bw > 0 && bh > 0) {
+                                val imgAspect = bw.toFloat() / bh
+                                val boxAspect = size.width.toFloat() / size.height
+                                var left = 0f
+                                var top = 0f
+                                var w = size.width.toFloat()
+                                var h = size.height.toFloat()
+                                if (imgAspect > boxAspect) {
+                                    h = w / imgAspect
+                                    top = (size.height - h) / 2f
+                                } else {
+                                    w = h * imgAspect
+                                    left = (size.width - w) / 2f
+                                }
+                                val nx = ((offset.x - left) / w).coerceIn(0f, 1f)
+                                val ny = ((offset.y - top) / h).coerceIn(0f, 1f)
+                                scope.launch { RecController.touchAf(nx, ny) }
+                            }
                         }
                     },
             )
@@ -156,6 +185,9 @@ fun RemoteScreen(onClose: () -> Unit) {
                         append(" 连").append(rec.lvClients)
                         if (RecController.lvStatus.isNotBlank()) append(" · ").append(RecController.lvStatus)
                         if (rec.shootFired.isNotBlank()) append(" · 快门").append(rec.shootFired)
+                            .append(" onShutter=").append(rec.shutterSt)
+                            .append(" 启动=").append(rec.capStart)
+                            .append(" 抑制=").append(rec.inhibit)
                         if (rec.shootErr.isNotBlank()) append(" · ").append(rec.shootErr)
                         if (rec.seqErr.isNotBlank()) append(" · seqErr:").append(rec.seqErr)
                     },
@@ -172,7 +204,7 @@ fun RemoteScreen(onClose: () -> Unit) {
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    PropChip("ISO", rec.iso, rec.isoAvail) {
+                    PropChip("ISO", rec.iso, rec.isoAvail, displayValue = if (rec.iso == "0") "auto" else null) {
                         scope.launch { RecController.setProp("iso", it) }
                     }
                     StepChip("F", rec.fnumber, {
@@ -282,6 +314,7 @@ private fun PropChip(
     label: String,
     value: String,
     avail: List<String>,
+    displayValue: String? = null,
     onPick: (String) -> Unit,
 ) {
     Surface(
@@ -295,7 +328,7 @@ private fun PropChip(
         Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
             Text(label, color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.labelSmall)
             Text(
-                value.ifBlank { "—" },
+                (displayValue ?: value).ifBlank { "—" },
                 color = Color.White,
                 style = MaterialTheme.typography.labelLarge,
                 fontFamily = FontFamily.Monospace,

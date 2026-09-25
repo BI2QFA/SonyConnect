@@ -34,6 +34,11 @@ data class RecState(
     val shootFired: String = "",
     val shootErr: String = "",
     val seqErr: String = "",
+    // 快门真值诊断：onShutter 状态（-1 未收到 / 0 成功 / 1 取消 / 2 错误）、
+    // capture 是否真的启动、getInhibitionInfo 抑制位图（0 无抑制 / -1 读不到）
+    val shutterSt: Int = -1,
+    val capStart: Int = 0,
+    val inhibit: Int = 0,
     val iso: String = "",
     val isoAvail: List<String> = emptyList(),
     val fnumber: String = "",
@@ -282,6 +287,9 @@ object RecController {
         shootFired = o.optString("shootFired"),
         shootErr = o.optString("shootErr"),
         seqErr = o.optString("seqErr"),
+        shutterSt = o.optInt("shutterSt", -1),
+        capStart = o.optInt("capStart"),
+        inhibit = o.optInt("inhibit"),
         iso = o.optString("iso"),
         isoAvail = strList(o, "isoAvail"),
         fnumber = o.optString("fnumber"),
