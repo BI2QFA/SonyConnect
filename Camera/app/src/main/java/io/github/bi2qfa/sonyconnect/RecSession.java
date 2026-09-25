@@ -95,6 +95,9 @@ public final class RecSession {
     private volatile String lastShootFired = "";
     private volatile String lastShootErr = "";
     private final AtomicBoolean shotRejected = new AtomicBoolean(false);
+    // 快门真值诊断：onShutter 状态（-1 未触发）与 capture 是否真的启动
+    private final AtomicInteger lastShutterStatus = new AtomicInteger(-1);
+    private final AtomicBoolean captureStarted = new AtomicBoolean(false);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private final Object shotLock = new Object();
@@ -423,9 +426,10 @@ public final class RecSession {
                 return null;
             }
         }
-        // 拍前快照 DCIM 最新文件：结果兜底靠"出现了比它新的文件"来判定
-        File dcim = rootDir == null ? null : new File(rootDir, "DCIM");
-        File newestBefore = newestUnder(dcim, 0);
+        // 拍前快照 DCIM 最新文件：结果兜底靠"出现了比它新的文件"来判定。
+        // 双卡机身（A7R2 有两个卡槽）照片可能落到主卡之外的存储，全部 /android/storage/* + 外置根都扫
+        File[] dcims = dcimRoots();
+        File newestBefore = newestUnderAll(dcims);
         long shotAt = System.currentTimeMillis();
         synchronized (shotLock) {
             shotPath = null;
@@ -434,11 +438,13 @@ public final class RecSession {
         }
         lastShootFired = "";
         lastShootErr = "";
+        lastShutterStatus.set(-1);
+        captureStarted.set(false);
         shotRejected.set(false);
         // ★ 快门必须在主线程触发：官方走 ExecutorCreator 专用线程、recipe-lab 在 UI
-        //   线程，PTP 网络线程是唯一没被真机验证过的调用环境。次序也照官方：先
-        //   burstableTakePicture()（智能遥控 SingleProcess 的快门），失败再退
-        //   camera1 takePicture(null,null,null)（recipe-lab 的快门）。
+        //   线程。次序反过来：takePicture(null,null,null) 优先（recipe-lab 在真机上
+        //   用 open(0,null) 这套环境验证过它能拍照存卡），抛异常才降级官方智能遥控的
+        //   burstableTakePicture（上一轮实测它在我们的环境里静默无效）。
         mainHandler.post(new Runnable() {
             public void run() {
                 synchronized (lock) {
@@ -446,18 +452,20 @@ public final class RecSession {
                         shotRejected.set(true);
                         return;
                     }
-                    boolean fired = invokeSilent(cameraEx, "burstableTakePicture", null, null);
-                    if (fired) {
-                        lastShootFired = "burstable";
-                    } else {
-                        try {
-                            if (camera != null) {
-                                camera.takePicture(null, null, null);
-                                fired = true;
-                                lastShootFired = "takePicture";
-                            }
-                        } catch (Throwable t) {
-                            lastShootErr = shortErr(t);
+                    boolean fired = false;
+                    try {
+                        if (camera != null) {
+                            camera.takePicture(null, null, null);
+                            fired = true;
+                            lastShootFired = "takePicture";
+                        }
+                    } catch (Throwable t) {
+                        lastShootErr = shortErr(t);
+                    }
+                    if (!fired) {
+                        fired = invokeSilent(cameraEx, "burstableTakePicture", null, null);
+                        if (fired) {
+                            lastShootFired = "burstable";
                         }
                     }
                     if (!fired) {
@@ -470,7 +478,14 @@ public final class RecSession {
         long deadline = System.currentTimeMillis() + 20000;
         while (result == null && System.currentTimeMillis() < deadline) {
             if (shotRejected.get()) {
-                lastError = "快门未被相机接受" + (lastShootErr.length() > 0 ? "（" + lastShootErr + "）" : "");
+                String reason = lastShootErr.length() > 0 ? lastShootErr : "";
+                int st = lastShutterStatus.get();
+                if (st == 1) {
+                    reason = "相机取消了快门";
+                } else if (st == 2) {
+                    reason = "相机快门错误";
+                }
+                lastError = "快门未成功" + (reason.length() > 0 ? "（" + reason + "）" : "");
                 AppLog.w("Rec", "shoot: " + lastError);
                 return null;
             }
@@ -488,7 +503,7 @@ public final class RecSession {
             }
             if (result == null) {
                 // 路径二：DCIM 轮询 —— 监听不可用的机型上，新落盘的文件就是答案
-                File nf = newestUnder(dcim, 0);
+                File nf = newestUnderAll(dcims);
                 if (nf != null && !nf.equals(newestBefore) && nf.lastModified() >= shotAt - 2000) {
                     String ptp = toPtpPath(nf);
                     if (ptp != null) {
@@ -517,8 +532,75 @@ public final class RecSession {
             emit(EV_SHOT, 1, 0);
             return result;
         }
-        lastError = "拍照超时（" + (lastShootFired.length() > 0 ? lastShootFired : "未触发") + "）";
+        // 诊断全在报错里：哪个快门、onShutter 状态、capture 是否启动、抑制位
+        lastError = "拍照超时（" + lastShootFired
+                + " 快门" + lastShutterStatus.get()
+                + " 启动" + (captureStarted.get() ? 1 : 0)
+                + " 抑制" + inhibitionInfo() + "）";
         return null;
+    }
+
+    /** CameraEx.getInhibitionInfo()（拍照抑制原因位图；0=无抑制，-1=读不到）。 */
+    private int inhibitionInfo() {
+        try {
+            Object r = cameraEx == null
+                    ? null
+                    : cameraEx.getClass().getMethod("getInhibitionInfo").invoke(cameraEx);
+            return r instanceof Integer ? ((Integer) r).intValue() : -1;
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /** 所有可能出照片的 DCIM 根：/android/storage/* 各槽 + 外置存储根，去重。 */
+    private File[] dcimRoots() {
+        List<File> out = new ArrayList<File>();
+        if (rootDir != null) {
+            addDcim(out, new File(rootDir, "DCIM"));
+        }
+        try {
+            addDcim(out, new File(android.os.Environment.getExternalStorageDirectory(), "DCIM"));
+        } catch (Throwable t) {
+        }
+        try {
+            File[] fs = new File("/android/storage").listFiles();
+            if (fs != null) {
+                for (int i = 0; i < fs.length; i++) {
+                    if (fs[i].isDirectory()) {
+                        addDcim(out, new File(fs[i], "DCIM"));
+                    }
+                }
+            }
+        } catch (Throwable t) {
+        }
+        return (File[]) out.toArray(new File[out.size()]);
+    }
+
+    private void addDcim(List<File> list, File dcim) {
+        if (dcim == null || !dcim.isDirectory()) {
+            return;
+        }
+        try {
+            String p = dcim.getCanonicalPath();
+            for (int i = 0; i < list.size(); i++) {
+                if (list.get(i).getCanonicalPath().equals(p)) {
+                    return;
+                }
+            }
+        } catch (Throwable t) {
+        }
+        list.add(dcim);
+    }
+
+    private File newestUnderAll(File[] dirs) {
+        File best = null;
+        for (int i = 0; i < dirs.length; i++) {
+            File f = newestUnder(dirs[i], 0);
+            if (f != null && (best == null || f.lastModified() > best.lastModified())) {
+                best = f;
+            }
+        }
+        return best;
     }
 
     /** DCIM 下（限深）最新修改的普通文件；用于拍照结果的兜底发现。 */
@@ -744,6 +826,9 @@ public final class RecSession {
             SJson.member(sb, "shootFired", lastShootFired);
             SJson.member(sb, "shootErr", lastShootErr);
             SJson.member(sb, "seqErr", lastSeqErr);
+            SJson.member(sb, "shutterSt", lastShutterStatus.get());
+            SJson.member(sb, "capStart", captureStarted.get() ? 1 : 0);
+            SJson.member(sb, "inhibit", active ? inhibitionInfo() : 0);
             Camera.Parameters p = null;
             Object mod = null;
             if (active && camera != null) {
@@ -924,6 +1009,27 @@ public final class RecSession {
         installProxy("com.sony.scalar.hardware.CameraEx$ShutterListener", "setShutterListener",
                 new InvocationHandler() {
                     public Object invoke(Object p, Method m, Object[] a) {
+                        // 官方 ShootingHandler.ShutterListenerEx 的语义：0=成功 1=取消 2=错误。
+                        // 这就是"快门到底有没有真的释放"的权威信号。
+                        if ("onShutter".equals(m.getName()) && a != null && a.length > 0
+                                && a[0] instanceof Integer) {
+                            int st = ((Integer) a[0]).intValue();
+                            lastShutterStatus.set(st);
+                            AppLog.i("Rec", "onShutter status=" + st);
+                            if (st != 0) {
+                                shotRejected.set(true);
+                            }
+                        }
+                        return null;
+                    }
+                });
+        installProxy("com.sony.scalar.hardware.CameraEx$OnCaptureStatusListener", "setCaptureStatusListener",
+                new InvocationHandler() {
+                    public Object invoke(Object p, Method m, Object[] a) {
+                        if ("onStart".equals(m.getName())) {
+                            captureStarted.set(true);
+                            AppLog.i("Rec", "capture onStart");
+                        }
                         return null;
                     }
                 });
