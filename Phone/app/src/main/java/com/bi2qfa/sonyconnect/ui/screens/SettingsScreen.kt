@@ -76,6 +76,7 @@ import com.bi2qfa.sonyconnect.ui.components.ConnectedButtonGroup
 enum class SettingsPage(val title: String) {
     Hub("设置"),
     Cameras("已配对相机"),
+    Remote("遥控拍摄"),
     Files("文件保存位置"),
     Storage("预览图与缓存"),
     Appearance("外观"),
@@ -108,6 +109,7 @@ fun SettingsScreen(
         when (page) {
             SettingsPage.Hub -> SettingsHub(onNavigate)
             SettingsPage.Cameras -> CamerasPage(onOpenPairing)
+            SettingsPage.Remote -> RemotePage()
             SettingsPage.Files -> FilesPage()
             SettingsPage.Storage -> StoragePage()
             SettingsPage.Appearance -> AppearancePage()
@@ -135,6 +137,16 @@ private fun SettingsHub(onNavigate: (SettingsPage) -> Unit) {
             leading = { IconCircle(MsIcon.CAMERA, IconTints.Accent) },
             trailing = { Chevron() },
             onClick = { onNavigate(SettingsPage.Cameras) },
+        )
+    }
+    SettingsGroup {
+        SettingsRow(
+            index = 0, count = 1,
+            title = "遥控拍摄",
+            support = "拍后自动预览",
+            leading = { IconCircle(MsIcon.CAMERA, IconTints.Accent) },
+            trailing = { Chevron() },
+            onClick = { onNavigate(SettingsPage.Remote) },
         )
     }
     SettingsGroup {
@@ -306,6 +318,20 @@ private fun CamerasPage(onOpenPairing: () -> Unit) {
             leading = { IconCircle(MsIcon.ADD, IconTints.Accent) },
             trailing = { Chevron() },
             onClick = onOpenPairing,
+        )
+    }
+}
+
+/** 二级页：遥控拍摄行为。 */
+@Composable
+private fun RemotePage() {
+    SettingsGroup {
+        SwitchRow(
+            index = 0, count = 1,
+            title = "拍后自动预览",
+            support = "遥控拍照后自动从卡里取回刚拍的照片并打开预览；照片本身始终直接存在相机卡里，原图也始终会加入传输队列",
+            checked = SettingsRepo.autoPostview,
+            onCheckedChange = { SettingsRepo.updateAutoPostview(it) },
         )
     }
 }

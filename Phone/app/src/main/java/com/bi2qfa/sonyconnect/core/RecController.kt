@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.bi2qfa.sonyconnect.data.SettingsRepo
 import com.bi2qfa.sonyconnect.ptpip.LiveviewClient
 import com.bi2qfa.sonyconnect.ptpip.ObjectRepository
 import com.bi2qfa.sonyconnect.transfer.DownloadService
@@ -139,11 +140,14 @@ object RecController {
             val path = withContext(Dispatchers.IO) { ObjectRepository.recShoot(h) }
             lastShotPath = path
             if (path.isNotBlank()) {
-                val jpeg = withContext(Dispatchers.IO) {
-                    ObjectRepository.fetchVirtualPreview(h, path)
-                }
-                if (jpeg != null) {
-                    postview = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+                // 照片直接存在相机卡里；这里只按设置决定要不要取回预览图打开
+                if (SettingsRepo.autoPostview) {
+                    val jpeg = withContext(Dispatchers.IO) {
+                        ObjectRepository.fetchVirtualPreview(h, path)
+                    }
+                    if (jpeg != null) {
+                        postview = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+                    }
                 }
                 withContext(Dispatchers.IO) { enqueueOriginal(h, path) }
             }

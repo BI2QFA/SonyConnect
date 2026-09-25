@@ -26,6 +26,8 @@ object SettingsRepo {
 
     private const val KEY_AUTO_PREVIEW = "autoPreviewFetch"
     private const val KEY_CACHE_LIMIT = "cacheLimitBytes"
+    // 遥控拍摄：拍完后是否自动从卡里取回刚拍的照片并打开预览
+    private const val KEY_AUTO_POSTVIEW = "autoPostview"
 
     /** 缓存上限默认值（用户定版）：512 MB。 */
     const val DEFAULT_CACHE_LIMIT = 512L * 1024 * 1024
@@ -74,6 +76,15 @@ object SettingsRepo {
     var autoPreviewFetch by mutableStateOf(false)
         private set
 
+    /**
+     * 遥控拍摄：拍完后自动从卡里取回照片并打开预览（默认**开**，保持既有行为）。
+     *
+     * 照片本身始终直接存在相机卡里；关掉只省掉"取回预览"这一步，
+     * 原图加入传输队列的行为不受影响。
+     */
+    var autoPostview by mutableStateOf(true)
+        private set
+
     /** 图像缓存（小图+预览合计）字节上限，设置页四档可选。 */
     var cacheLimitBytes by mutableLongStateOf(DEFAULT_CACHE_LIMIT)
         private set
@@ -89,6 +100,7 @@ object SettingsRepo {
         lastConnectedDevice = prefs.getString(KEY_LAST_DEVICE, "") ?: ""
         autoPreviewFetch = prefs.getBoolean(KEY_AUTO_PREVIEW, false)
         cacheLimitBytes = prefs.getLong(KEY_CACHE_LIMIT, DEFAULT_CACHE_LIMIT)
+        autoPostview = prefs.getBoolean(KEY_AUTO_POSTVIEW, true)
     }
 
     /**
@@ -135,6 +147,11 @@ object SettingsRepo {
         autoPreviewFetch = v
         prefs.edit().putBoolean(KEY_AUTO_PREVIEW, v).apply()
         ThumbStore.restartAutoFetch()
+    }
+
+    fun updateAutoPostview(v: Boolean) {
+        autoPostview = v
+        prefs.edit().putBoolean(KEY_AUTO_POSTVIEW, v).apply()
     }
 
     /** 上限调小后立刻收敛占用（[ThumbStore.onLimitChanged] 起后台线程修剪）。 */
