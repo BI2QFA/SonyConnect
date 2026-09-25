@@ -789,6 +789,34 @@ public final class RecSession {
                         ok = true;
                     } catch (Throwable t) {
                     }
+                } else if ("picFmt".equals(key) && mod != null) {
+                    // 官方 PictureQualityController 的组合模型：存储格式走
+                    // ParametersModifier.setPictureStorageFormat("raw"/"rawjpeg"/"jpeg")，
+                    // JPEG 质量走 camera1 Parameters.setJpegQuality(95/50/25)
+                    // （官方常量：X.FINE=95、FINE=50、STD=25）
+                    String fmt;
+                    int q;
+                    if ("raw".equals(value)) {
+                        fmt = "raw";
+                        q = -1;
+                    } else if ("raw+jpeg".equals(value)) {
+                        fmt = "rawjpeg";
+                        q = -1;
+                    } else if ("x.fine".equals(value)) {
+                        fmt = "jpeg";
+                        q = 95;
+                    } else if ("std".equals(value)) {
+                        fmt = "jpeg";
+                        q = 25;
+                    } else {
+                        fmt = "jpeg";
+                        q = 50;
+                    }
+                    ok = invokeSilent(mod, "setPictureStorageFormat",
+                            new Class[]{String.class}, new Object[]{fmt});
+                    if (ok && q >= 0 && p != null) {
+                        p.setJpegQuality(q);
+                    }
                 }
                 if (ok && camera != null && p != null) {
                     camera.setParameters(p);
@@ -857,6 +885,7 @@ public final class RecSession {
                 Object st = invoke(mod, "getSelfTimer", null, null);
                 SJson.member(sb, "selfTimer", st == null ? "0" : String.valueOf(st));
                 putAnyList(sb, "selfTimerAvail", invoke(mod, "getSupportedSelfTimers", null, null));
+                putPicFmt(sb, mod, p);
             }
             return utf8(SJson.endObj(sb));
         }
@@ -1219,6 +1248,101 @@ public final class RecSession {
         Object v = invoke(mod, get, null, null);
         SJson.member(sb, key, v == null ? "" : String.valueOf(v));
         putAnyList(sb, key + "Avail", invoke(mod, avail, null, null));
+    }
+
+    /**
+     * 拍摄质量（官方 PictureQualityController 的组合模型）→ 统一档位：
+     * raw / raw+jpeg / x.fine / fine / std。存储格式来自
+     * getPictureStorageFormat，JPEG 质量档来自 camera1 getJpegQuality。
+     */
+    private void putPicFmt(StringBuilder sb, Object mod, Camera.Parameters p) {
+        SJson.member(sb, "picFmt", picFmtLabel(mod, p));
+        List<String> avail = new ArrayList<String>();
+        Object fmts = invoke(mod, "getSupportedPictureStorageFormats", null, null);
+        boolean raw = false, rawjpeg = false, jpeg = false;
+        if (fmts instanceof List) {
+            List fs = (List) fmts;
+            for (int i = 0; i < fs.size(); i++) {
+                Object o = fs.get(i);
+                if ("raw".equals(o)) {
+                    raw = true;
+                } else if ("rawjpeg".equals(o)) {
+                    rawjpeg = true;
+                } else if ("jpeg".equals(o)) {
+                    jpeg = true;
+                }
+            }
+        }
+        if (raw) {
+            avail.add("raw");
+        }
+        if (rawjpeg) {
+            avail.add("raw+jpeg");
+        }
+        if (jpeg) {
+            Object qs = invoke(mod, "getSupportedJpegQualities", null, null);
+            boolean xf = false, fi = false, st = false;
+            if (qs instanceof List) {
+                List q = (List) qs;
+                for (int i = 0; i < q.size(); i++) {
+                    Object o = q.get(i);
+                    if (o instanceof Number) {
+                        int n = ((Number) o).intValue();
+                        if (n >= 95) {
+                            xf = true;
+                        } else if (n >= 50) {
+                            fi = true;
+                        } else if (n > 0) {
+                            st = true;
+                        }
+                    }
+                }
+            }
+            if (xf) {
+                avail.add("x.fine");
+            }
+            if (fi) {
+                avail.add("fine");
+            }
+            if (st) {
+                avail.add("std");
+            }
+            if (!xf && !fi && !st) {
+                avail.add("fine"); // 质量表读不到时保底 fine(50)，与官方强制档一致
+            }
+        }
+        putList(sb, "picFmtAvail", avail);
+    }
+
+    private String picFmtLabel(Object mod, Camera.Parameters p) {
+        Object v = invoke(mod, "getPictureStorageFormat", null, null);
+        String s = v == null ? "" : String.valueOf(v);
+        if ("raw".equals(s)) {
+            return "raw";
+        }
+        if ("rawjpeg".equals(s)) {
+            return "raw+jpeg";
+        }
+        if ("jpeg".equals(s)) {
+            int q = 0;
+            try {
+                if (p != null) {
+                    q = p.getJpegQuality();
+                }
+            } catch (Throwable t) {
+            }
+            if (q >= 90) {
+                return "x.fine";
+            }
+            if (q >= 40) {
+                return "fine";
+            }
+            if (q > 0) {
+                return "std";
+            }
+            return "fine";
+        }
+        return s;
     }
 
     private void putList(StringBuilder sb, String key, List list) {
