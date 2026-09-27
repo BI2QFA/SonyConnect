@@ -588,7 +588,7 @@ public final class RecSession {
                                 camera.takePicture(null, null, null);
                                 lastShootFired = "burstable+takePicture";
                             } catch (Throwable t) {
-                                lastShootErr = shortErr(t);
+                                noteShootErr("fb:" + shortErr(t));
                             }
                         }
                     }
@@ -609,11 +609,14 @@ public final class RecSession {
             emit(EV_SHOT, 1, 0);
             return result;
         }
-        // 诊断全在报错里：哪个快门、onShutter 状态、capture 是否启动、抑制位
+        // 诊断全在报错里：哪个快门、onShutter 状态、capture 是否启动、抑制位、
+        // 本次判定的自拍定时值、会话 open 方式（official/official+media/null）
         lastError = "拍照超时（" + lastShootFired
                 + " 快门" + lastShutterStatus.get()
                 + " 启动" + (captureStarted.get() ? 1 : 0)
-                + " 抑制" + inhibitionInfo() + "）";
+                + " 抑制" + inhibitionInfo()
+                + " 定时" + shotSelfTimer
+                + " " + safe(optsMode) + "）";
         return null;
     }
 
