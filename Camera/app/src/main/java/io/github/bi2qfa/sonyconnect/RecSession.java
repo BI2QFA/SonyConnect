@@ -100,6 +100,8 @@ public final class RecSession {
     // 快门真值诊断：onShutter 状态（-1 未触发）与 capture 是否真的启动
     private final AtomicInteger lastShutterStatus = new AtomicInteger(-1);
     private final AtomicBoolean captureStarted = new AtomicBoolean(false);
+    /** 本次拍摄在 cam 线程上读到的自拍定时秒数（官方 isSelfTimer() 判据：10 或 2）。 */
+    private volatile int shotSelfTimer = -1;
 
     // ★ 官方 4.30 同款：拍摄类动作全部在一条专用 HandlerThread 上串行执行
     //   （官方 ExecutorCreator extends HandlerThread，sHandlerFromMain = new Handler(getLooper())。
@@ -493,21 +495,39 @@ public final class RecSession {
         lastShutterStatus.set(-1);
         captureStarted.set(false);
         shotRejected.set(false);
-        // ★ 官方链路（SingleProcess.takePicture + NormalExecutor.myTakePicture）：
-        //   ① 拍前临时关掉 RemoteControlMode（官方 setTempRemoteControl(1)）；
-        //   ② 快门主路 = burstableTakePicture —— 官方遥控唯一使用的快门 API
-        //      （camera1 takePicture 是 recipe-lab 那种本地场景验证过的口径）；
-        //   ③ 触发放在专用 HandlerThread 上（官方 ExecutorCreator 同款）；
-        //   ④ 若 2.5 秒内既无 onShutter 也无 capture onStart（burstable 被固件静默
-        //      忽略的情形），再补打一次 camera1 takePicture 兜底。
+        shotSelfTimer = -1;
+        // ★ 官方链路（CaptureState 路由 + SingleProcess + NormalExecutor.myTakePicture）：
+        //   ① 拍前临时关掉 RemoteControlMode（官方 setTempRemoteControl(1)，takePicture() 恒传 type=2）；
+        //   ② 快门按驱动模式分流 —— 官方 DriveModeController.isSelfTimer()：
+        //      getSelfTimer()==10||2 → SelfTimerCaptureState → startSelfTimerShutter()；
+        //      其余 → NormalCaptureState → burstableTakePicture()。
+        //      实测 A7R2 挂 2 秒自拍时 burstableTakePicture 在固件里直接抛异常（shootFired 空 +
+        //      兜底 camera1 也抛 "takePicture failed"），官方在此模式下根本不调 burstable；
+        //   ③ 触发放专用 HandlerThread（官方 ExecutorCreator 同款）；
+        //   ④ 普通模式下 2.5 秒内既无 onShutter 也无 capture onStart（burstable 被固件静默
+        //      忽略的情形），补打一次 camera1 takePicture 兜底；自拍模式跳过（定时器
+        //      正常也要 ~2 秒后才释放，补打只会撞车）。
         postCam(new Runnable() {
             public void run() {
                 remoteControlOffForCapture();
-                boolean fired = invokeSilent(cameraEx, "burstableTakePicture", null, null);
+                int timer = readSelfTimerSec();
+                shotSelfTimer = timer;
+                boolean stShot = timer == 2 || timer == 10;
+                boolean fired = invokeSilent(cameraEx,
+                        stShot ? "startSelfTimerShutter" : "burstableTakePicture", null, null);
                 if (fired) {
-                    lastShootFired = "burstable";
-                } else {
-                    lastShootErr = "burstableTakePicture 调用失败";
+                    lastShootFired = stShot ? "selftimer" : "burstable";
+                    return;
+                }
+                lastShootErr = (stShot ? "startSelfTimerShutter" : "burstableTakePicture") + " 调用失败";
+                // 自拍主路调不动（NoSuchMethod 之类）时交叉补一发 burstable——仅为诊断，
+                // 官方不会这样混调；能触发说明其实是普通快门可用的状态。
+                if (stShot) {
+                    if (invokeSilent(cameraEx, "burstableTakePicture", null, null)) {
+                        lastShootFired = "selftimer→burstable";
+                    } else {
+                        noteShootErr("burstableTakePicture 调用失败");
+                    }
                 }
             }
         });
@@ -555,9 +575,11 @@ public final class RecSession {
                 }
             }
             // 兜底：burstable 若被固件静默忽略（fork 在 A7R2 上见过这种"无异常但无动作"），
-            // 2.5 秒内既无 onShutter 也无 capture onStart，就补打一次 camera1 takePicture
+            // 2.5 秒内既无 onShutter 也无 capture onStart，就补打一次 camera1 takePicture。
+            // 自拍模式跳过：定时器正常也要 ~2 秒后才释放快门，2.5 秒无回调是预期行为。
             if (result == null && !fallbackFired && System.currentTimeMillis() > fallbackAt
-                    && lastShutterStatus.get() == -1 && !captureStarted.get()) {
+                    && lastShutterStatus.get() == -1 && !captureStarted.get()
+                    && shotSelfTimer != 2 && shotSelfTimer != 10) {
                 fallbackFired = true;
                 postCam(new Runnable() {
                     public void run() {
@@ -604,6 +626,9 @@ public final class RecSession {
             public boolean run() {
                 if (lastShutterStatus.get() != 0) {
                     invokeSilent(cameraEx, "cancelTakePicture", null, null);
+                    // 官方 SingleProcess.terminate 同款：自拍快门是独立 API，单独取消
+                    //（非自拍状态会抛异常，invokeSilent 吞掉即可）。
+                    invokeSilent(cameraEx, "cancelSelfTimerShutter", null, null);
                 }
                 remoteControlRestore();
                 restartPreviewQuiet();
@@ -622,6 +647,28 @@ public final class RecSession {
         } catch (Throwable t) {
             return -1;
         }
+    }
+
+    /**
+     * 官方 DriveModeController.isSelfTimer() 的数据源：ParametersModifier.getSelfTimer()。
+     * 只在 cam 线程上调用（要过 camera.getParameters()）。
+     */
+    private int readSelfTimerSec() {
+        try {
+            Camera.Parameters p = camera == null ? null : camera.getParameters();
+            Object mod = modifier(p);
+            Object v = mod == null ? null : invoke(mod, "getSelfTimer", null, null);
+            return v instanceof Integer ? ((Integer) v).intValue() : -1;
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /** 分段累积拍摄错误：主路失败不被兜底错误覆盖，现场诊断两条路各自的结果。 */
+    private void noteShootErr(String s) {
+        lastShootErr = lastShootErr == null || lastShootErr.length() == 0
+                ? s
+                : lastShootErr + "; " + s;
     }
 
     /** 所有可能出照片的 DCIM 根：/android/storage/* 各槽 + 外置存储根，去重。 */
